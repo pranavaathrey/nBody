@@ -1,4 +1,5 @@
 #include <iostream>
+#include <fstream>
 #include <random>
 #include <chrono>
 
@@ -15,7 +16,7 @@ void initializeGalacticDisk(ParticleSystem& system, size_t count) {
     std::mt19937 gen(42); 
     
     // distribution parameters
-    std::uniform_real_distribution<float> distRadius(0.05f, 1.0f); // Avoid division by zero
+    std::uniform_real_distribution<float> distRadius(0.05f, 1.0f); // avoid division by zero
     std::uniform_real_distribution<float> distAngle(0.0f, 2.0f * 3.1415926535f);
     std::uniform_real_distribution<float> distZ(-diskThickness, diskThickness);
     std::uniform_real_distribution<float> distMass(1.0f, 10.0f);
@@ -75,6 +76,10 @@ int main() {
     // populate acceleration at t=0 for correct first Verlet step
     initializeForces(system);
 
+    // export sampled 2D positions for visualization
+    ofstream out("visualize/frames.csv");
+    out << "frame,id,x,y\n";
+
     // ---------------------PHYSICS LOOP---------------------//
     cout << "Starting physics loop benchmark for " 
          << NUM_PARTICLES << " bodies...\n";
@@ -86,14 +91,21 @@ int main() {
         while (currentFrame < TARGET_FRAMES) {
             auto frameStart = chrono::high_resolution_clock::now();
 
-            // execute one step of the Velocity Verlet and Barnes-Hut algorithm
-            physicsTick(system, dt);
+                // execute one step of the Velocity Verlet and Barnes-Hut algorithm
+                physicsTick(system, dt);
 
             auto frameEnd = chrono::high_resolution_clock::now();
             chrono::duration<double, milli> frameTime = frameEnd - frameStart;
 
-            // output performance metrics every 10 frames
-            if (currentFrame % 10 == 0) 
+            // write simulation data to csv every 5 frames
+            if (currentFrame % 5 == 0) 
+                for (size_t i = 0; i < NUM_PARTICLES; ++i) {
+                    out << currentFrame << "," << i << ","
+                        << system.posX[i] << "," << system.posY[i] << "\n";
+                }
+            
+            // output performance metrics every 50 frames
+            if (currentFrame % 50 == 0) 
                 cout << "Frame: " << currentFrame 
                     << " | Compute Time: " << frameTime.count() << " ms\n";
             currentFrame++;

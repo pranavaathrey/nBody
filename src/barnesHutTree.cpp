@@ -101,7 +101,7 @@ void BarnesHutTree::build(const ParticleSystem& system) {
     size_t n = system.posX.size();
     if (n == 0) return;
 
-    // Reserve memory upfront to minimize allocations during insertion
+    // reserve memory upfront to minimize allocations during insertion
     nodes.clear();
     nodes.reserve(n * 2); 
 

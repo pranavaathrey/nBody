@@ -61,6 +61,8 @@ obj/
 *.sqlite
 *.tmp
 *.bak
+*.csv
+*.old
 
 ### # IDE & Tooling Configuration
 # Local environment settings that shouldn't be shared with the team

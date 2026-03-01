@@ -1,114 +1,171 @@
 #include "nBodySim.hpp"
 
-BarnesHutTree octree;
+namespace {
+class SimulationKernel {
+    private:
+    BarnesHutTree octree;
+
+    static bool isLeaf(const OctreeNode& node) {
+        for (int i = 0; i < 8; ++i) 
+            if (node.children[i] != -1) return false;
+        return true;
+    }
+
+    static void accumulateForce(float dx, float dy, float dz, float distSq, float sourceMass,
+                                float particleMass, float& fx, float& fy, float& fz) {
+        const float invDist = 1.0f / sqrt(distSq + SOFTENING_SQ);
+        const float invDist3 = invDist * invDist * invDist;
+        const float scale = G_CONST * particleMass * sourceMass * invDist3;
+        fx += scale * dx;
+        fy += scale * dy;
+        fz += scale * dz;
+    }
+
+    static void applyForceFromTree(int pIdx, ParticleSystem& system,
+                                   const vector<OctreeNode>& nodes, vector<int>& stack) {
+        stack.clear();
+        stack.push_back(0);
+
+        const float px = system.posX[pIdx];
+        const float py = system.posY[pIdx];
+        const float pz = system.posZ[pIdx];
+        const float particleMass = system.mass[pIdx];
+
+        float fx = 0.0f;
+        float fy = 0.0f;
+        float fz = 0.0f;
+
+        while (!stack.empty()) {
+            const int nodeIdx = stack.back();
+            stack.pop_back();
+            const OctreeNode& node = nodes[nodeIdx];
+
+            if (node.totalMass <= 0.0f) continue;
+
+            const float dx = node.centerMassX - px;
+            const float dy = node.centerMassY - py;
+            const float dz = node.centerMassZ - pz;
+            const float distSq = dx * dx + dy * dy + dz * dz;
+
+            if (isLeaf(node)) {
+                if (node.particleIndex == -1 || node.particleIndex == pIdx) continue;
+                accumulateForce(dx, dy, dz, distSq, node.totalMass, particleMass, fx, fy, fz);
+                continue;
+            }
+            const float sizeX = node.maxX - node.minX;
+            const float sizeY = node.maxY - node.minY;
+            const float sizeZ = node.maxZ - node.minZ;
+            const float size = max(sizeX, max(sizeY, sizeZ));
+            const float dist = sqrt(distSq + SOFTENING_SQ);
+
+            if ((size / dist) < THETA)
+                accumulateForce(dx, dy, dz, distSq, node.totalMass, particleMass, fx, fy, fz);
+            else 
+                for (int i = 0; i < 8; ++i) {
+                    const int childIdx = node.children[i];
+                    if (childIdx != -1) 
+                        stack.push_back(childIdx);
+                }
+        }
+        system.forceX[pIdx] = fx;
+        system.forceY[pIdx] = fy;
+        system.forceZ[pIdx] = fz;
+    }
+
+    public:
+    void initializeForces(ParticleSystem& system) {
+        octree.build(system);
+        calculateForces(system);
+    }
+    void calculateForces(ParticleSystem& system) {
+        const vector<OctreeNode>& nodes = octree.getNodes();
+        if (nodes.empty()) return;
+
+        const size_t n = system.posX.size();
+        #ifdef _OPENMP
+        #pragma omp parallel
+        {
+            vector<int> stack;
+            stack.reserve(128);
+            #pragma omp for
+            for (ptrdiff_t i = 0; i < static_cast<ptrdiff_t>(n); ++i) 
+                applyForceFromTree(static_cast<int>(i), system, nodes, stack);
+        }
+        #else
+        vector<int> stack;
+        stack.reserve(128);
+        for (ptrdiff_t i = 0; i < static_cast<ptrdiff_t>(n); ++i) 
+            applyForceFromTree(static_cast<int>(i), system, nodes, stack);
+        #endif
+    }
+    void clearForces(ParticleSystem& system) const {
+        const size_t n = system.forceX.size();
+        #ifdef _OPENMP
+        #pragma omp parallel for
+        #endif
+        for (ptrdiff_t i = 0; i < static_cast<ptrdiff_t>(n); ++i) {
+            system.forceX[i] = 0.0f;
+            system.forceY[i] = 0.0f;
+            system.forceZ[i] = 0.0f;
+        }
+    }
+
+    void physicsTick(ParticleSystem& system, float dt) {
+        const size_t n = system.posX.size();
+        const float halfDt = 0.5f * dt;
+        const float halfDtSq = halfDt * dt;
+
+        // First half-step: position and velocity updates from current acceleration.
+        #ifdef _OPENMP
+        #pragma omp parallel for
+        #endif
+        for (size_t i = 0; i < n; ++i) {
+            const float ax = system.forceX[i] * system.invMass[i];
+            const float ay = system.forceY[i] * system.invMass[i];
+            const float az = system.forceZ[i] * system.invMass[i];
+
+            system.posX[i] += system.velX[i] * dt + ax * halfDtSq;
+            system.posY[i] += system.velY[i] * dt + ay * halfDtSq;
+            system.posZ[i] += system.velZ[i] * dt + az * halfDtSq;
+
+            system.velX[i] += ax * halfDt;
+            system.velY[i] += ay * halfDt;
+            system.velZ[i] += az * halfDt;
+        }
+        octree.build(system);
+        calculateForces(system);
+
+        // Second half-step: finalize velocity with updated acceleration.
+        #ifdef _OPENMP
+        #pragma omp parallel for
+        #endif
+        for (size_t i = 0; i < n; ++i) {
+            const float ax = system.forceX[i] * system.invMass[i];
+            const float ay = system.forceY[i] * system.invMass[i];
+            const float az = system.forceZ[i] * system.invMass[i];
+
+            system.velX[i] += ax * halfDt;
+            system.velY[i] += ay * halfDt;
+            system.velZ[i] += az * halfDt;
+        }
+    }
+};
+
+SimulationKernel& kernel() {
+    static SimulationKernel instance;
+    return instance;
+}
+}
 
 void clearForces(ParticleSystem& system) {
-    fill(system.forceX.begin(), system.forceX.end(), 0.0f);
-    fill(system.forceY.begin(), system.forceY.end(), 0.0f);
-    fill(system.forceZ.begin(), system.forceZ.end(), 0.0f);
-}
-
-// helper: traverses the tree to compute force on a specific particle
-void applyForceFromNode(int pIdx, int nodeIdx, ParticleSystem& system, const vector<OctreeNode>& nodes) {
-    if (nodeIdx < 0) return;
-    const OctreeNode& node = nodes[nodeIdx];
-    
-    // skip empty nodes
-    if (node.children[0] == -1 && node.particleIndex == -1) return;
-    
-    float dx = node.centerMassX - system.posX[pIdx];
-    float dy = node.centerMassY - system.posY[pIdx];
-    float dz = node.centerMassZ - system.posZ[pIdx];
-    float distSq = dx*dx + dy*dy + dz*dz;
-    
-    // if leaf node
-    if (node.children[0] == -1) {
-        if (node.particleIndex != pIdx) { // avoid self-interaction
-            float dist = sqrt(distSq + SOFTENING_SQ);
-            float force = (G_CONST * system.mass[pIdx] * node.totalMass)
-                        / (distSq + SOFTENING_SQ);
-            
-            system.forceX[pIdx] += force * (dx / dist);
-            system.forceY[pIdx] += force * (dy / dist);
-            system.forceZ[pIdx] += force * (dz / dist);
-        }
-        return;
-    }    
-    // internal node – apply Barnes-Hut criterion
-    float sizeX = node.maxX - node.minX;
-    float sizeY = node.maxY - node.minY;
-    float sizeZ = node.maxZ - node.minZ;
-    float size = max(sizeX, max(sizeY, sizeZ));
-    float dist = sqrt(distSq + SOFTENING_SQ);
-    
-    if ((size / dist) < THETA) {
-        // node is far enough; treat as a point mass
-        float force = (G_CONST * system.mass[pIdx] * node.totalMass) 
-                    / (distSq + SOFTENING_SQ);
-        
-        system.forceX[pIdx] += force * (dx / dist);
-        system.forceY[pIdx] += force * (dy / dist);
-        system.forceZ[pIdx] += force * (dz / dist);
-    } else {
-        // node is too close; recurse into children
-        for (int i = 0; i < 8; ++i) {
-            const int childIdx = node.children[i];
-            if (childIdx != -1) 
-                applyForceFromNode(pIdx, childIdx, system, nodes);
-        }
-    }
+    kernel().clearForces(system);
 }
 void calculateForces(ParticleSystem& system) {
-    const vector<OctreeNode>& nodes = octree.getNodes();
-    if (nodes.empty()) return;
-
-    size_t n = system.posX.size();
-    #ifdef _OPENMP
-    #pragma omp parallel for
-    #endif
-    for (ptrdiff_t i = 0; i < static_cast<ptrdiff_t>(n); ++i) 
-        // root node is always at index 0
-        applyForceFromNode(static_cast<int>(i), 0, system, nodes); 
+    kernel().calculateForces(system);
 }
 void initializeForces(ParticleSystem& system) {
-    clearForces(system);
-    octree.build(system);
-    calculateForces(system);
+    kernel().initializeForces(system);
 }
-
-// Velocity Verlet implementation
 void physicsTick(ParticleSystem& system, float dt) {
-    size_t n = system.posX.size();
-
-    // first half of Verlet: update positions and half-velocities
-    for(size_t i = 0; i < n; ++i) {
-        float ax = system.forceX[i] / system.mass[i];
-        float ay = system.forceY[i] / system.mass[i];
-        float az = system.forceZ[i] / system.mass[i];
-
-        system.posX[i] += system.velX[i] * dt + 0.5f * ax * dt * dt;
-        system.posY[i] += system.velY[i] * dt + 0.5f * ay * dt * dt;
-        system.posZ[i] += system.velZ[i] * dt + 0.5f * az * dt * dt;
-
-        system.velX[i] += 0.5f * ax * dt;
-        system.velY[i] += 0.5f * ay * dt;
-        system.velZ[i] += 0.5f * az * dt;
-    }
-    // clear forces and rebuild the octree
-    clearForces(system);
-    octree.build(system); 
-
-    // calculate new forces using Barnes-Hut traversing
-    calculateForces(system); 
-
-    // second half of Verlet: finalize velocities
-    for(size_t i = 0; i < n; ++i) {
-        float new_ax = system.forceX[i] / system.mass[i];
-        float new_ay = system.forceY[i] / system.mass[i];
-        float new_az = system.forceZ[i] / system.mass[i];
-
-        system.velX[i] += 0.5f * new_ax * dt;
-        system.velY[i] += 0.5f * new_ay * dt;
-        system.velZ[i] += 0.5f * new_az * dt;
-    }
+    kernel().physicsTick(system, dt);
 }

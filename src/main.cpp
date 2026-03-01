@@ -13,38 +13,40 @@ void initializeGalacticDisk(ParticleSystem& system, size_t count) {
     const float diskThickness = 5.0f;
 
     // use a deterministic seed for repeatable benchmarking
-    std::mt19937 gen(42); 
+    mt19937 gen(42); 
     
     // distribution parameters
-    std::uniform_real_distribution<float> distRadius(0.05f, 1.0f); // avoid division by zero
-    std::uniform_real_distribution<float> distAngle(0.0f, 2.0f * 3.1415926535f);
-    std::uniform_real_distribution<float> distZ(-diskThickness, diskThickness);
-    std::uniform_real_distribution<float> distMass(1.0f, 10.0f);
+    uniform_real_distribution<float> distRadius(0.05f, 1.0f); // avoid div by zero
+    uniform_real_distribution<float> distAngle(0.0f, 2.0f * 3.1415926535f);
+    uniform_real_distribution<float> distZ(-diskThickness, diskThickness);
+    uniform_real_distribution<float> distMass(1.0f, 10.0f);
 
     // initialize the central supermassive body
     system.posX[0] = 0.0f; system.posY[0] = 0.0f; system.posZ[0] = 0.0f;
     system.velX[0] = 0.0f; system.velY[0] = 0.0f; system.velZ[0] = 0.0f;
     system.forceX[0] = 0.0f; system.forceY[0] = 0.0f; system.forceZ[0] = 0.0f;
     system.mass[0] = centralMass;
+    system.invMass[0] = 1.0f / centralMass;
 
     // distribute the remaining N-1 particles
     for (size_t i = 1; i < count; ++i) {
         // area-uniform radial distribution
-        float r = maxRadius * std::sqrt(distRadius(gen));
+        float r = maxRadius * sqrt(distRadius(gen));
         float theta = distAngle(gen);
 
         // assign cartesian coordinates
-        float x = r * std::cos(theta);
-        float y = r * std::sin(theta);
+        float x = r * cos(theta);
+        float y = r * sin(theta);
         float z = distZ(gen);
 
         system.posX[i] = x;
         system.posY[i] = y;
         system.posZ[i] = z;
         system.mass[i] = distMass(gen);
+        system.invMass[i] = 1.0f / system.mass[i];
 
         // calculate the scalar orbital velocity
-        float v = std::sqrt(G * centralMass / r);
+        float v = sqrt(G * centralMass / r);
 
         // apply the velocity along the tangential vector (-y/r, x/r)
         system.velX[i] = -v * (y / r);
@@ -66,7 +68,7 @@ int main() {
     // fixed time step length
     const float dt = 0.016667f; // 60 ticks per simulated second
     // Benchmark config
-    const int TARGET_FRAMES = 1000;
+    const int TARGET_FRAMES = 10000;
     int currentFrame = 0;
     
     // allocate contiguous memory
@@ -81,8 +83,8 @@ int main() {
     out << "frame,id,x,y\n";
 
     // ---------------------PHYSICS LOOP---------------------//
-    cout << "Starting physics loop benchmark for " 
-         << NUM_PARTICLES << " bodies...\n";
+    cout << "Starting physics loop benchmark for "
+              << NUM_PARTICLES << " bodies...\n";
 
     chrono::duration<double> totalTime;
     auto startTime = chrono::high_resolution_clock::now();
@@ -106,8 +108,8 @@ int main() {
             
             // output performance metrics every 50 frames
             if (currentFrame % 50 == 0) 
-                cout << "Frame: " << currentFrame 
-                    << " | Compute Time: " << frameTime.count() << " ms\n";
+                cout << "Frame: " << currentFrame
+                          << " | Compute Time: " << frameTime.count() << " ms\n";
             currentFrame++;
         }
 

@@ -11,9 +11,9 @@ const float G_CONST = 1.0f;       // gravitational constant
 const float THETA = 0.5f;         // Barnes-Hut threshold
 const float SOFTENING_SQ = 0.1f;  // softening factor squared to prevent infinite forces
 
-// structure
+// universe
 
-struct ParticleSystem {
+struct ParticleSystem { // structure of arrays
     // positions
     vector<float> posX, posY, posZ;
     // velocities
@@ -22,12 +22,15 @@ struct ParticleSystem {
     vector<float> forceX, forceY, forceZ;
     // mass
     vector<float> mass;
+    // cached reciprocal mass to avoid repeated divisions in the integrator
+    vector<float> invMass;
 
     void allocate(size_t n) {
         posX.assign(n, 0.0f); posY.assign(n, 0.0f); posZ.assign(n, 0.0f);
         velX.assign(n, 0.0f); velY.assign(n, 0.0f); velZ.assign(n, 0.0f);
         forceX.assign(n, 0.0f); forceY.assign(n, 0.0f); forceZ.assign(n, 0.0f);
         mass.assign(n, 1.0f);
+        invMass.assign(n, 1.0f);
     }
 };
 struct OctreeNode {

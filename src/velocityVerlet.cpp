@@ -26,10 +26,10 @@ class SimulationKernel {
         stack.clear();
         stack.push_back(0);
 
-        const float px = system.posX[pIdx];
-        const float py = system.posY[pIdx];
-        const float pz = system.posZ[pIdx];
-        const float particleMass = system.mass[pIdx];
+        const float px = system.posXAt(pIdx);
+        const float py = system.posYAt(pIdx);
+        const float pz = system.posZAt(pIdx);
+        const float particleMass = system.massAt(pIdx);
 
         float fx = 0.0f;
         float fy = 0.0f;
@@ -67,9 +67,7 @@ class SimulationKernel {
                         stack.push_back(childIdx);
                 }
         }
-        system.forceX[pIdx] = fx;
-        system.forceY[pIdx] = fy;
-        system.forceZ[pIdx] = fz;
+        system.setForce(static_cast<size_t>(pIdx), fx, fy, fz);
     }
 
     public:
@@ -81,7 +79,7 @@ class SimulationKernel {
         const vector<OctreeNode>& nodes = octree.getNodes();
         if (nodes.empty()) return;
 
-        const size_t n = system.posX.size();
+        const size_t n = system.size();
         #ifdef _OPENMP
         #pragma omp parallel
         {
@@ -99,19 +97,16 @@ class SimulationKernel {
         #endif
     }
     void clearForces(ParticleSystem& system) const {
-        const size_t n = system.forceX.size();
+        const size_t n = system.size();
         #ifdef _OPENMP
         #pragma omp parallel for
         #endif
-        for (ptrdiff_t i = 0; i < static_cast<ptrdiff_t>(n); ++i) {
-            system.forceX[i] = 0.0f;
-            system.forceY[i] = 0.0f;
-            system.forceZ[i] = 0.0f;
-        }
+        for (ptrdiff_t i = 0; i < static_cast<ptrdiff_t>(n); ++i)
+            system.setForceZero(static_cast<size_t>(i));
     }
 
     void physicsTick(ParticleSystem& system, float dt) {
-        const size_t n = system.posX.size();
+        const size_t n = system.size();
         const float halfDt = 0.5f * dt;
         const float halfDtSq = halfDt * dt;
 
@@ -119,18 +114,22 @@ class SimulationKernel {
         #ifdef _OPENMP
         #pragma omp parallel for
         #endif
-        for (size_t i = 0; i < n; ++i) {
-            const float ax = system.forceX[i] * system.invMass[i];
-            const float ay = system.forceY[i] * system.invMass[i];
-            const float az = system.forceZ[i] * system.invMass[i];
+        for (ptrdiff_t idx = 0; idx < static_cast<ptrdiff_t>(n); ++idx) {
+            const size_t i = static_cast<size_t>(idx);
+            BodyBlock& blk = system.block(i);
+            const size_t lane = ParticleSystem::laneIndex(i);
 
-            system.posX[i] += system.velX[i] * dt + ax * halfDtSq;
-            system.posY[i] += system.velY[i] * dt + ay * halfDtSq;
-            system.posZ[i] += system.velZ[i] * dt + az * halfDtSq;
+            const float ax = blk.forceX[lane] * blk.invMass[lane];
+            const float ay = blk.forceY[lane] * blk.invMass[lane];
+            const float az = blk.forceZ[lane] * blk.invMass[lane];
 
-            system.velX[i] += ax * halfDt;
-            system.velY[i] += ay * halfDt;
-            system.velZ[i] += az * halfDt;
+            blk.posX[lane] += blk.velX[lane] * dt + ax * halfDtSq;
+            blk.posY[lane] += blk.velY[lane] * dt + ay * halfDtSq;
+            blk.posZ[lane] += blk.velZ[lane] * dt + az * halfDtSq;
+
+            blk.velX[lane] += ax * halfDt;
+            blk.velY[lane] += ay * halfDt;
+            blk.velZ[lane] += az * halfDt;
         }
         octree.build(system);
         calculateForces(system);
@@ -139,14 +138,18 @@ class SimulationKernel {
         #ifdef _OPENMP
         #pragma omp parallel for
         #endif
-        for (size_t i = 0; i < n; ++i) {
-            const float ax = system.forceX[i] * system.invMass[i];
-            const float ay = system.forceY[i] * system.invMass[i];
-            const float az = system.forceZ[i] * system.invMass[i];
+        for (ptrdiff_t idx = 0; idx < static_cast<ptrdiff_t>(n); ++idx) {
+            const size_t i = static_cast<size_t>(idx);
+            BodyBlock& blk = system.block(i);
+            const size_t lane = ParticleSystem::laneIndex(i);
 
-            system.velX[i] += ax * halfDt;
-            system.velY[i] += ay * halfDt;
-            system.velZ[i] += az * halfDt;
+            const float ax = blk.forceX[lane] * blk.invMass[lane];
+            const float ay = blk.forceY[lane] * blk.invMass[lane];
+            const float az = blk.forceZ[lane] * blk.invMass[lane];
+
+            blk.velX[lane] += ax * halfDt;
+            blk.velY[lane] += ay * halfDt;
+            blk.velZ[lane] += az * halfDt;
         }
     }
 };

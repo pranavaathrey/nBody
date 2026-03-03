@@ -1,8 +1,10 @@
+
 #include <vector>
 #include <cmath>
 #include <limits>
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 
 using namespace std;
 
@@ -13,25 +15,88 @@ const float SOFTENING_SQ = 0.1f;  // softening factor squared to prevent infinit
 
 // universe
 
-struct ParticleSystem { // structure of arrays
-    // positions
-    vector<float> posX, posY, posZ;
-    // velocities
-    vector<float> velX, velY, velZ;
-    // accumulated Forces
-    vector<float> forceX, forceY, forceZ;
-    // mass
-    vector<float> mass;
-    // cached reciprocal mass to avoid repeated divisions in the integrator
-    vector<float> invMass;
+// AoSoA block tuned for AVX2 width (8 floats).
+constexpr size_t BODY_BLOCK_SIZE = 8;
+
+struct BodyBlock {
+    alignas(32) float posX[BODY_BLOCK_SIZE];
+    alignas(32) float posY[BODY_BLOCK_SIZE];
+    alignas(32) float posZ[BODY_BLOCK_SIZE];
+
+    alignas(32) float velX[BODY_BLOCK_SIZE];
+    alignas(32) float velY[BODY_BLOCK_SIZE];
+    alignas(32) float velZ[BODY_BLOCK_SIZE];
+
+    alignas(32) float forceX[BODY_BLOCK_SIZE];
+    alignas(32) float forceY[BODY_BLOCK_SIZE];
+    alignas(32) float forceZ[BODY_BLOCK_SIZE];
+
+    alignas(32) float mass[BODY_BLOCK_SIZE];
+    alignas(32) float invMass[BODY_BLOCK_SIZE];
+
+    uint8_t count = 0; // number of live lanes in this block
+};
+
+struct ParticleSystem {
+    vector<BodyBlock> blocks;
+    size_t count = 0;
 
     void allocate(size_t n) {
-        posX.assign(n, 0.0f); posY.assign(n, 0.0f); posZ.assign(n, 0.0f);
-        velX.assign(n, 0.0f); velY.assign(n, 0.0f); velZ.assign(n, 0.0f);
-        forceX.assign(n, 0.0f); forceY.assign(n, 0.0f); forceZ.assign(n, 0.0f);
-        mass.assign(n, 1.0f);
-        invMass.assign(n, 1.0f);
+        count = n;
+        const size_t blockCount = (n + BODY_BLOCK_SIZE - 1) / BODY_BLOCK_SIZE;
+        blocks.resize(blockCount);
+        for (size_t b = 0; b < blockCount; ++b) {
+            BodyBlock& blk = blocks[b];
+            blk.count = static_cast<uint8_t>(min(BODY_BLOCK_SIZE, n - b * BODY_BLOCK_SIZE));
+            for (size_t lane = 0; lane < BODY_BLOCK_SIZE; ++lane) {
+                blk.posX[lane] = 0.0f; blk.posY[lane] = 0.0f; blk.posZ[lane] = 0.0f;
+                blk.velX[lane] = 0.0f; blk.velY[lane] = 0.0f; blk.velZ[lane] = 0.0f;
+                blk.forceX[lane] = 0.0f; blk.forceY[lane] = 0.0f; blk.forceZ[lane] = 0.0f;
+                blk.mass[lane] = 1.0f; blk.invMass[lane] = 1.0f;
+            }
+        }
     }
+
+    // helpers to locate block/lane for a flat particle index
+    static inline size_t blockIndex(size_t idx) { return idx / BODY_BLOCK_SIZE; }
+    static inline size_t laneIndex(size_t idx) { return idx % BODY_BLOCK_SIZE; }
+
+    inline BodyBlock& block(size_t idx) { return blocks[blockIndex(idx)]; }
+    inline const BodyBlock& block(size_t idx) const { return blocks[blockIndex(idx)]; }
+
+    // getters
+    inline float posXAt(size_t idx) const { const auto& blk = block(idx); return blk.posX[laneIndex(idx)]; }
+    inline float posYAt(size_t idx) const { const auto& blk = block(idx); return blk.posY[laneIndex(idx)]; }
+    inline float posZAt(size_t idx) const { const auto& blk = block(idx); return blk.posZ[laneIndex(idx)]; }
+    inline float velXAt(size_t idx) const { const auto& blk = block(idx); return blk.velX[laneIndex(idx)]; }
+    inline float velYAt(size_t idx) const { const auto& blk = block(idx); return blk.velY[laneIndex(idx)]; }
+    inline float velZAt(size_t idx) const { const auto& blk = block(idx); return blk.velZ[laneIndex(idx)]; }
+    inline float massAt(size_t idx) const { const auto& blk = block(idx); return blk.mass[laneIndex(idx)]; }
+    inline float invMassAt(size_t idx) const { const auto& blk = block(idx); return blk.invMass[laneIndex(idx)]; }
+    inline float forceXAt(size_t idx) const { const auto& blk = block(idx); return blk.forceX[laneIndex(idx)]; }
+    inline float forceYAt(size_t idx) const { const auto& blk = block(idx); return blk.forceY[laneIndex(idx)]; }
+    inline float forceZAt(size_t idx) const { const auto& blk = block(idx); return blk.forceZ[laneIndex(idx)]; }
+
+    // setters
+    inline void setPosition(size_t idx, float x, float y, float z) {
+        BodyBlock& blk = block(idx); const size_t lane = laneIndex(idx);
+        blk.posX[lane] = x; blk.posY[lane] = y; blk.posZ[lane] = z;
+    }
+    inline void setVelocity(size_t idx, float x, float y, float z) {
+        BodyBlock& blk = block(idx); const size_t lane = laneIndex(idx);
+        blk.velX[lane] = x; blk.velY[lane] = y; blk.velZ[lane] = z;
+    }
+    inline void setForce(size_t idx, float fx, float fy, float fz) {
+        BodyBlock& blk = block(idx); const size_t lane = laneIndex(idx);
+        blk.forceX[lane] = fx; blk.forceY[lane] = fy; blk.forceZ[lane] = fz;
+    }
+    inline void setMass(size_t idx, float m) {
+        BodyBlock& blk = block(idx); const size_t lane = laneIndex(idx);
+        blk.mass[lane] = m; blk.invMass[lane] = 1.0f / m;
+    }
+    inline void setForceZero(size_t idx) { setForce(idx, 0.0f, 0.0f, 0.0f); }
+
+    inline size_t size() const { return count; }
 };
 struct OctreeNode {
     float centerMassX, centerMassY, centerMassZ; 

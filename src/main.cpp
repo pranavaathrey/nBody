@@ -22,11 +22,10 @@ void initializeGalacticDisk(ParticleSystem& system, size_t count) {
     uniform_real_distribution<float> distMass(1.0f, 10.0f);
 
     // initialize the central supermassive body
-    system.posX[0] = 0.0f; system.posY[0] = 0.0f; system.posZ[0] = 0.0f;
-    system.velX[0] = 0.0f; system.velY[0] = 0.0f; system.velZ[0] = 0.0f;
-    system.forceX[0] = 0.0f; system.forceY[0] = 0.0f; system.forceZ[0] = 0.0f;
-    system.mass[0] = centralMass;
-    system.invMass[0] = 1.0f / centralMass;
+    system.setPosition(0, 0.0f, 0.0f, 0.0f);
+    system.setVelocity(0, 0.0f, 0.0f, 0.0f);
+    system.setForceZero(0);
+    system.setMass(0, centralMass);
 
     // distribute the remaining N-1 particles
     for (size_t i = 1; i < count; ++i) {
@@ -39,24 +38,15 @@ void initializeGalacticDisk(ParticleSystem& system, size_t count) {
         float y = r * sin(theta);
         float z = distZ(gen);
 
-        system.posX[i] = x;
-        system.posY[i] = y;
-        system.posZ[i] = z;
-        system.mass[i] = distMass(gen);
-        system.invMass[i] = 1.0f / system.mass[i];
+        system.setPosition(i, x, y, z);
+        system.setMass(i, distMass(gen));
 
         // calculate the scalar orbital velocity
         float v = sqrt(G * centralMass / r);
 
         // apply the velocity along the tangential vector (-y/r, x/r)
-        system.velX[i] = -v * (y / r);
-        system.velY[i] = v * (x / r);
-        system.velZ[i] = 0.0f; 
-        
-        // zero out initial forces
-        system.forceX[i] = 0.0f;
-        system.forceY[i] = 0.0f;
-        system.forceZ[i] = 0.0f;
+        system.setVelocity(i, -v * (y / r), v * (x / r), 0.0f);
+        system.setForceZero(i);
     }
 }
 
@@ -78,9 +68,9 @@ int main() {
     // populate acceleration at t=0 for correct first Verlet step
     initializeForces(system);
 
-    // export sampled 2D positions for visualization
+    // export sampled 2D positions and velocities for visualization
     ofstream out("visualize/frames.csv");
-    out << "frame,id,x,y\n";
+    out << "frame,id,x,y,vx,vy\n";
 
     // ---------------------PHYSICS LOOP---------------------//
     cout << "Starting physics loop benchmark for "
@@ -103,7 +93,8 @@ int main() {
             if (currentFrame % 5 == 0) 
                 for (size_t i = 0; i < NUM_PARTICLES; ++i) {
                     out << currentFrame << "," << i << ","
-                        << system.posX[i] << "," << system.posY[i] << "\n";
+                    << system.posXAt(i) << "," << system.posYAt(i) << ","
+                    << system.velXAt(i) << "," << system.velYAt(i) << "\n";
                 }
             
             // output performance metrics every 50 frames

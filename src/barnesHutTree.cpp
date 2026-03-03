@@ -57,9 +57,9 @@ void BarnesHutTree::insertParticle(int nodeIdx, int pIdx,
         nodes[nodeIdx].particleIndex = -1; 
 
         int octantExisting = getOctant(nodes[nodeIdx], 
-            system.posX[existingPIdx], 
-            system.posY[existingPIdx], 
-            system.posZ[existingPIdx]);
+            system.posXAt(existingPIdx), 
+            system.posYAt(existingPIdx), 
+            system.posZAt(existingPIdx));
         if (nodes[nodeIdx].children[octantExisting] == -1) {
             const int childIdx = allocateNode();
             nodes[nodeIdx].children[octantExisting] = childIdx;
@@ -70,7 +70,7 @@ void BarnesHutTree::insertParticle(int nodeIdx, int pIdx,
     }        
     // insert new particle
     int octantNew = getOctant(nodes[nodeIdx], 
-                        system.posX[pIdx], system.posY[pIdx], system.posZ[pIdx]);
+                        system.posXAt(pIdx), system.posYAt(pIdx), system.posZAt(pIdx));
     if (nodes[nodeIdx].children[octantNew] == -1) {
         const int childIdx = allocateNode();
         nodes[nodeIdx].children[octantNew] = childIdx;
@@ -85,11 +85,11 @@ void BarnesHutTree::computeMassDistribution(int nodeIdx, const ParticleSystem& s
     if (isLeaf(node)) {
         // if leaf holds a particle, set particle's mass and center
         if (node.particleIndex != -1) {
-            node.totalMass = system.mass[node.particleIndex];
+            node.totalMass = system.massAt(node.particleIndex);
 
-            node.centerMassX = system.posX[node.particleIndex];
-            node.centerMassY = system.posY[node.particleIndex];
-            node.centerMassZ = system.posZ[node.particleIndex];
+            node.centerMassX = system.posXAt(node.particleIndex);
+            node.centerMassY = system.posYAt(node.particleIndex);
+            node.centerMassZ = system.posZAt(node.particleIndex);
         }
         return; // otherwise, leave as is
     }    
@@ -128,7 +128,7 @@ const vector<OctreeNode>& BarnesHutTree::getNodes() const {
 }
 
 void BarnesHutTree::build(const ParticleSystem& system) {
-    const size_t n = system.posX.size();
+    const size_t n = system.size();
     if (n == 0) return;
 
     // reserve memory upfront
@@ -144,9 +144,12 @@ void BarnesHutTree::build(const ParticleSystem& system) {
     float maxZ = -numeric_limits<float>::max();
 
     for (size_t i = 0; i < n; ++i) {
-        minX = min(minX, system.posX[i]); maxX = max(maxX, system.posX[i]);
-        minY = min(minY, system.posY[i]); maxY = max(maxY, system.posY[i]);
-        minZ = min(minZ, system.posZ[i]); maxZ = max(maxZ, system.posZ[i]);
+        const float px = system.posXAt(i);
+        const float py = system.posYAt(i);
+        const float pz = system.posZAt(i);
+        minX = min(minX, px); maxX = max(maxX, px);
+        minY = min(minY, py); maxY = max(maxY, py);
+        minZ = min(minZ, pz); maxZ = max(maxZ, pz);
     }    
     // padding for zero-size boxes
     float epsilon = 1e-5f;

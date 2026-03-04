@@ -2,39 +2,83 @@
 #include <fstream>
 #include <random>
 #include <chrono>
+#include <thread>
+#include <vector>
+#include <cstring>
+#include <csignal>
+#include <atomic>
+#include <limits>
 
 #include "nBodySim.hpp"
 #include "generated/frame_sample_generated.h"
+#include "WebSocketServer.hpp"
+#include <csignal>
+#include <atomic>
 
-void writeFrameToFlatbuffer(const ParticleSystem& system,
-                                     int frame,
-                                     flatbuffers::FlatBufferBuilder& builder,
-                                     ofstream& out) {
-    builder.Clear();
+namespace {
 
-    float* interleaved = nullptr;
-    const auto bodies = builder.CreateUninitializedVector<float>(system.size() * 6, &interleaved);
+    atomic<bool> g_running{true};
+    void handleSignal(int) {
+        g_running = false;
+    }
 
-    size_t writeIdx = 0;
-    for (const BodyBlock& blk : system.blocks)
-        for (size_t lane = 0; lane < blk.count; ++lane) {
-            interleaved[writeIdx++] = blk.posX[lane];
-            interleaved[writeIdx++] = blk.posY[lane];
-            interleaved[writeIdx++] = blk.posZ[lane];
-            interleaved[writeIdx++] = blk.velX[lane];
-            interleaved[writeIdx++] = blk.velY[lane];
-            interleaved[writeIdx++] = blk.velZ[lane];
+    inline uint32_t toLittleEndian(uint32_t v) {
+        #if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
+        return ((v & 0x000000FFu) << 24) | ((v & 0x0000FF00u) << 8) |
+            ((v & 0x00FF0000u) >> 8) | ((v & 0xFF000000u) >> 24);
+        #else
+        // little-endian host
+        return v;
+        #endif
+    }
+
+    void writeFrameToOutputs(const ParticleSystem& system,
+                            int frame,
+                            flatbuffers::FlatBufferBuilder& builder,
+                            ofstream* out,
+                            FrameBroadcaster* broadcaster) {
+        builder.Clear();
+
+        float* interleaved = nullptr;
+        const auto bodies = builder.CreateUninitializedVector<float>(system.size() * 6, &interleaved);
+
+        size_t writeIdx = 0;
+        for (const BodyBlock& blk : system.blocks)
+            for (size_t lane = 0; lane < blk.count; ++lane) {
+                interleaved[writeIdx++] = blk.posX[lane];
+                interleaved[writeIdx++] = blk.posY[lane];
+                interleaved[writeIdx++] = blk.posZ[lane];
+                interleaved[writeIdx++] = blk.velX[lane];
+                interleaved[writeIdx++] = blk.velY[lane];
+                interleaved[writeIdx++] = blk.velZ[lane];
+            }
+
+        const auto sample = nbody::CreateFrameSample(
+            builder,
+            static_cast<uint32_t>(frame),
+            static_cast<uint32_t>(system.size()),
+            bodies);
+
+        // Build a non-size-prefixed FlatBuffer so we can add our own 4-byte length prefix.
+        nbody::FinishFrameSampleBuffer(builder, sample);
+
+        const uint32_t payloadSize = static_cast<uint32_t>(builder.GetSize());
+        const uint32_t lenLE = toLittleEndian(payloadSize);
+
+        if (out && out->is_open()) {
+            out->write(reinterpret_cast<const char*>(&lenLE), sizeof(lenLE));
+            out->write(reinterpret_cast<const char*>(builder.GetBufferPointer()),
+                    static_cast<streamsize>(payloadSize));
         }
 
-    const auto sample = nbody::CreateFrameSample(
-        builder,
-        static_cast<uint32_t>(frame),
-        static_cast<uint32_t>(system.size()),
-        bodies);
+        if (broadcaster) {
+            auto packet = make_shared<vector<uint8_t>>(sizeof(lenLE) + payloadSize);
+            memcpy(packet->data(), &lenLE, sizeof(lenLE));
+            memcpy(packet->data() + sizeof(lenLE), builder.GetBufferPointer(), payloadSize);
+            broadcaster->broadcast(packet);
+        }
+    }
 
-    nbody::FinishSizePrefixedFrameSampleBuffer(builder, sample);
-    out.write(reinterpret_cast<const char*>(builder.GetBufferPointer()),
-              static_cast<streamsize>(builder.GetSize()));
 }
 
 void initializeGalacticDisk(ParticleSystem& system, size_t count) {
@@ -83,14 +127,16 @@ void initializeGalacticDisk(ParticleSystem& system, size_t count) {
 }
 
 int main() {
+    signal(SIGINT, handleSignal);
+    signal(SIGTERM, handleSignal);
+
     // ------------------INITIALIZE SYSTEM------------------//
-    // # of particles in system
-    const size_t NUM_PARTICLES = 10000;
+    
+    const size_t NUM_PARTICLES = 100; // # of particles in system
     ParticleSystem system;
-    // fixed time step length
-    const float dt = 0.016667f; // 60 ticks per simulated second
-    // Benchmark config
-    const int TARGET_FRAMES = 1000;
+    
+    const float dt = 0.016667f; // fixed time step length (60 ticks per sim second)
+    
     int currentFrame = 0;
     
     // allocate contiguous memory
@@ -101,12 +147,18 @@ int main() {
     initializeForces(system);
 
     // export sampled positions and velocities for visualization as size-prefixed FlatBuffers
-    ofstream out("visualizer/frames.fb", ios::binary);
+    ofstream out("frontend/frames.fb", ios::binary);
     if (!out) {
-        cerr << "Failed to open output file: visualizer/frames.fb\n";
+        cerr << "Failed to open output file: frontend/frames.fb\n";
         return 1;
     }
-    flatbuffers::FlatBufferBuilder frameBuilder(128 + NUM_PARTICLES * 6 * sizeof(float));
+    // start WebSocket broadcaster on ws://localhost:8080/frames
+    boost::asio::io_context ioc;
+    FrameBroadcaster broadcaster(ioc, 8080);
+    thread wsThread([&ioc]() { ioc.run(); });
+
+    flatbuffers::FlatBufferBuilder frameBuilder(
+                    128 + NUM_PARTICLES * 6 * sizeof(float));
 
     // ---------------------PHYSICS LOOP---------------------//
     cout << "Starting physics loop benchmark for "
@@ -116,7 +168,7 @@ int main() {
     auto startTime = chrono::high_resolution_clock::now();
 
         // the core execution loop
-        while (currentFrame < TARGET_FRAMES) {
+        while (g_running) {
             auto frameStart = chrono::high_resolution_clock::now();
 
                 // execute one step of the Velocity Verlet and Barnes-Hut algorithm
@@ -126,7 +178,7 @@ int main() {
             chrono::duration<double, milli> frameTime = frameEnd - frameStart;
 
             // write simulation data for every frame as interleaved FlatBuffers
-            writeFrameToFlatbuffer(system, currentFrame, frameBuilder, out);
+            writeFrameToOutputs(system, currentFrame, frameBuilder, &out, &broadcaster);
             
             // output performance metrics every 50 frames
             if (currentFrame % 50 == 0) 
@@ -139,11 +191,15 @@ int main() {
     totalTime = endTime - startTime;
 
     // ---------------------OUTPUT RESULTS---------------------//    
-    double averageFPS = TARGET_FRAMES / totalTime.count();
+    double averageFPS = static_cast<double>(currentFrame) / totalTime.count();
     
     cout << "Benchmark complete.\n";
     cout << "Total Time: " << totalTime.count() << " seconds.\n";
     cout << "Average FPS: " << averageFPS << "\n";
+
+    broadcaster.stop();
+    ioc.stop();
+    if (wsThread.joinable()) wsThread.join();
 
     return 0;
 }

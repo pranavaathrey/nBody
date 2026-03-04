@@ -1,5 +1,0 @@
-SERIAL BUILD
-g++ -std=c++17 -O3 -march=native -flto -DNDEBUG -Wall -Wextra -pedantic src/main.cpp src/velocityVerlet.cpp src/barnesHutTree.cpp -o nbody_serial.exe
-
-PARALLEL BUILD (OPENMP)
-g++ -std=c++17 -O3 -march=native -flto -DNDEBUG -Wall -Wextra -pedantic -fopenmp src/main.cpp src/velocityVerlet.cpp src/barnesHutTree.cpp -o nbody_omp.exe

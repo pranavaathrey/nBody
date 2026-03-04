@@ -63,6 +63,7 @@ obj/
 *.bak
 *.csv
 *.old
+*.fb
 
 ### # IDE & Tooling Configuration
 # Local environment settings that shouldn't be shared with the team

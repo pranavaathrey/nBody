@@ -1,0 +1,12 @@
+namespace nbody;
+
+// One sampled simulation frame.
+table FrameSample {
+  frame:uint32;
+  body_count:uint32;
+  // Interleaved as [px, py, pz, vx, vy, vz] for each body.
+  bodies:[float];
+}
+
+root_type FrameSample;
+file_identifier "NBFR";

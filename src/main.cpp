@@ -4,6 +4,38 @@
 #include <chrono>
 
 #include "nBodySim.hpp"
+#include "generated/frame_sample_generated.h"
+
+void writeFrameToFlatbuffer(const ParticleSystem& system,
+                                     int frame,
+                                     flatbuffers::FlatBufferBuilder& builder,
+                                     ofstream& out) {
+    builder.Clear();
+
+    float* interleaved = nullptr;
+    const auto bodies = builder.CreateUninitializedVector<float>(system.size() * 6, &interleaved);
+
+    size_t writeIdx = 0;
+    for (const BodyBlock& blk : system.blocks)
+        for (size_t lane = 0; lane < blk.count; ++lane) {
+            interleaved[writeIdx++] = blk.posX[lane];
+            interleaved[writeIdx++] = blk.posY[lane];
+            interleaved[writeIdx++] = blk.posZ[lane];
+            interleaved[writeIdx++] = blk.velX[lane];
+            interleaved[writeIdx++] = blk.velY[lane];
+            interleaved[writeIdx++] = blk.velZ[lane];
+        }
+
+    const auto sample = nbody::CreateFrameSample(
+        builder,
+        static_cast<uint32_t>(frame),
+        static_cast<uint32_t>(system.size()),
+        bodies);
+
+    nbody::FinishSizePrefixedFrameSampleBuffer(builder, sample);
+    out.write(reinterpret_cast<const char*>(builder.GetBufferPointer()),
+              static_cast<streamsize>(builder.GetSize()));
+}
 
 void initializeGalacticDisk(ParticleSystem& system, size_t count) {
     // gravitational constant and system parameters
@@ -58,7 +90,7 @@ int main() {
     // fixed time step length
     const float dt = 0.016667f; // 60 ticks per simulated second
     // Benchmark config
-    const int TARGET_FRAMES = 10000;
+    const int TARGET_FRAMES = 1000;
     int currentFrame = 0;
     
     // allocate contiguous memory
@@ -68,9 +100,13 @@ int main() {
     // populate acceleration at t=0 for correct first Verlet step
     initializeForces(system);
 
-    // export sampled 2D positions and velocities for visualization
-    ofstream out("visualize/frames.csv");
-    out << "frame,id,x,y,vx,vy\n";
+    // export sampled positions and velocities for visualization as size-prefixed FlatBuffers
+    ofstream out("visualizer/frames.fb", ios::binary);
+    if (!out) {
+        cerr << "Failed to open output file: visualizer/frames.fb\n";
+        return 1;
+    }
+    flatbuffers::FlatBufferBuilder frameBuilder(128 + NUM_PARTICLES * 6 * sizeof(float));
 
     // ---------------------PHYSICS LOOP---------------------//
     cout << "Starting physics loop benchmark for "
@@ -89,18 +125,13 @@ int main() {
             auto frameEnd = chrono::high_resolution_clock::now();
             chrono::duration<double, milli> frameTime = frameEnd - frameStart;
 
-            // write simulation data to csv every 5 frames
-            if (currentFrame % 5 == 0) 
-                for (size_t i = 0; i < NUM_PARTICLES; ++i) {
-                    out << currentFrame << "," << i << ","
-                    << system.posXAt(i) << "," << system.posYAt(i) << ","
-                    << system.velXAt(i) << "," << system.velYAt(i) << "\n";
-                }
+            // write simulation data for every frame as interleaved FlatBuffers
+            writeFrameToFlatbuffer(system, currentFrame, frameBuilder, out);
             
             // output performance metrics every 50 frames
             if (currentFrame % 50 == 0) 
                 cout << "Frame: " << currentFrame
-                          << " | Compute Time: " << frameTime.count() << " ms\n";
+                     << " | Compute Time: " << frameTime.count() << " ms\n";
             currentFrame++;
         }
 

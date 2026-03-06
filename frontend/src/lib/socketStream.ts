@@ -8,7 +8,6 @@ export type SocketControls = {
   close: () => void;
 };
 
-// Keep the client resilient: retry after transient failures and tolerate Blob/ArrayBuffer payloads.
 export function startFrameWebSocket(
   url: string,
   onFrame: FrameHandler,

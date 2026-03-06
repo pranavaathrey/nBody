@@ -1,245 +1,320 @@
-import { useEffect, useRef } from 'react';
-import * as THREE from 'three';
+import React, { useEffect, useRef } from 'react';
+import {
+  Color4,
+  DirectionalLight,
+  Engine,
+  HemisphericLight,
+  Scene,
+  UniversalCamera,
+  Vector3
+} from '@babylonjs/core';
+import {
+  BILLBOARD_SWITCH_DISTANCE,
+  BODY_SPHERE_RADIUS,
+  VECTOR_OVERLAY_SCALE_RADIUS
+} from '../lib/config';
 import { useFrameStore } from '../state/useFrameStore';
+import { createBodyInstancesRenderer } from './threeNBody/bodyInstances';
+import { createCameraRig } from './threeNBody/cameraRig';
+import { computeBounds, percentileRange } from './threeNBody/math';
+import { createVectorOverlayManager } from './threeNBody/vectorOverlays';
 
 export function ThreeNBody() {
   const hostRef = useRef<HTMLDivElement>(null);
-  const needsFitRef = useRef(true);
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
 
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x05060a);
+    const canvas = document.createElement('canvas');
+    canvas.style.width = '100%';
+    canvas.style.height = '100%';
+    canvas.style.display = 'block';
+    canvas.style.touchAction = 'none';
+    host.appendChild(canvas);
 
-    const camera = new THREE.PerspectiveCamera(60, 1, 0.01, 5000);
-    camera.position.z = 3.0;
-    const target = new THREE.Vector3(0, 0, 0);
+    const engine = new Engine(canvas, true, {
+      preserveDrawingBuffer: false,
+      powerPreference: 'high-performance'
+    });
+    engine.setHardwareScalingLevel(1 / Math.min(window.devicePixelRatio || 1, 1.5));
+    const preventContextMenu = (ev: Event) => ev.preventDefault();
+    canvas.addEventListener('contextmenu', preventContextMenu);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
-    host.appendChild(renderer.domElement);
-    renderer.domElement.style.touchAction = 'none';
+    const scene = new Scene(engine);
+    scene.clearColor = new Color4(5 / 255, 6 / 255, 10 / 255, 1);
 
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(), 3));
+    const camera = new UniversalCamera('camera', new Vector3(0, 0, 3), scene);
+    camera.fov = Math.PI / 2.5;
+    camera.minZ = 0.01;
+    camera.maxZ = 10000;
+    camera.inputs.clear();
+    camera.upVector = Vector3.Up();
 
-    const sphereGeometry = new THREE.SphereGeometry(1, 16, 12);
-    const sphereMaterial = new THREE.MeshStandardMaterial({
-      color: 0xf4c069,
-      roughness: 0.35,
-      metalness: 0.05
+    const hemi = new HemisphericLight('hemi', new Vector3(0, 1, 0), scene);
+    hemi.intensity = 0.35;
+    const dir = new DirectionalLight('dir', new Vector3(-2, -2, -2).normalize(), scene);
+    dir.position = new Vector3(2, 2, 2);
+    dir.intensity = 1.1;
+
+    const bodyInstances = createBodyInstancesRenderer(scene);
+    const vectorOverlays = createVectorOverlayManager(scene);
+
+    let bodyRadius = BODY_SPHERE_RADIUS;
+    let lastFrame = -1;
+    let lastBodyCount = 0;
+    let lastTime = performance.now();
+    let boundsCenter = new Vector3(0, 0, 0);
+    let boundsRadius = 1;
+    let needsFit = true;
+    let speedScratch = new Float32Array(0);
+    let accelerationVectorScratch = new Float32Array(0);
+    let accelerationMagnitudeScratch = new Float32Array(0);
+    let previousVelocitySnapshot = new Float32Array(0);
+    let previousFrameSampleTime = 0;
+    let previousVelocityVectorsVisible = false;
+    let previousAccelerationVectorsVisible = false;
+    let latestPositions: Float32Array | null = null;
+    let latestVelocities: Float32Array | null = null;
+    let latestAccelerationVectors: Float32Array | null = null;
+    let latestAccelerationMagnitudes: Float32Array | null = null;
+    let latestSpeedMin = 0;
+    let latestSpeedSpan = 1;
+    let latestAccelerationMin = 0;
+    let latestAccelerationSpan = 1;
+    const vectorScaleRadius = VECTOR_OVERLAY_SCALE_RADIUS;
+    const lastBodyUpdateCameraPos = new Vector3(Number.NaN, Number.NaN, Number.NaN);
+
+    const cameraRig = createCameraRig({
+      canvas,
+      camera,
+      getBoundsCenter: () => boundsCenter,
+      getBoundsRadius: () => boundsRadius,
+      getInvertLook: () => useFrameStore.getState().invertLook,
+      getBaseMoveSpeed: () => useFrameStore.getState().cameraBaseMoveSpeed
     });
 
-    const ambient = new THREE.AmbientLight(0xffffff, 0.35);
-    const keyLight = new THREE.DirectionalLight(0xfff1c1, 1.1);
-    keyLight.position.set(2, 2, 2);
-    scene.add(ambient, keyLight);
-
-    let spheres: THREE.InstancedMesh | null = null;
-    const instanceMatrix = new THREE.Matrix4();
-    const instanceScale = new THREE.Vector3(1, 1, 1);
-    const instanceQuat = new THREE.Quaternion();
-    const instancePos = new THREE.Vector3();
-    let bodyRadius = 0.01;
-
-    const fitCameraToPoints = () => {
-      const sphere = geometry.boundingSphere;
-      if (!sphere) return;
-
-      // Place the camera far enough back to fit the whole cloud and keep the
-      // point size sensible at that distance.
-      const fov = (camera.fov * Math.PI) / 180;
-      const distance = (sphere.radius / Math.tan(fov / 2)) * 1.2;
-      camera.position.set(sphere.center.x, sphere.center.y, sphere.center.z + distance);
-      target.copy(sphere.center);
-      camera.lookAt(target);
-      camera.near = Math.max(0.01, distance * 0.01);
-      camera.far = distance * 4;
-      camera.updateProjectionMatrix();
-
-      // Scale sphere radius with cloud radius so bodies stay visible.
-      bodyRadius = Math.max(0.01, sphere.radius * 0.003);
+    const onResize = () => {
+      engine.setHardwareScalingLevel(1 / Math.min(window.devicePixelRatio || 1, 1.5));
+      engine.resize();
     };
 
-    // ------------ Interaction helpers ------------ //
-    const panOffset = new THREE.Vector3();
-    const panUp = new THREE.Vector3();
-    const panRight = new THREE.Vector3();
-    const forward = new THREE.Vector3();
-    const moveDelta = new THREE.Vector3();
-
-    const pan = (deltaX: number, deltaY: number) => {
-      const element = renderer.domElement;
-      const distance = camera.position.distanceTo(target);
-      const fov = (camera.fov * Math.PI) / 180;
-      const height = 2 * Math.tan(fov / 2) * distance;
-      // scale panning to viewport and scene size
-      const panX = (-deltaX / element.clientHeight) * height;
-      const panY = (deltaY / element.clientHeight) * height;
-
-      panRight.setFromMatrixColumn(camera.matrix, 0).multiplyScalar(panX);
-      panUp.setFromMatrixColumn(camera.matrix, 1).multiplyScalar(panY);
-      panOffset.copy(panRight).add(panUp);
-
-      camera.position.add(panOffset);
-      target.add(panOffset);
-    };
-
-    const keys: Record<string, boolean> = { KeyW: false, KeyA: false, KeyS: false, KeyD: false };
-    let lastPointer = new THREE.Vector2();
-    let isDragging = false;
-
-    const onPointerDown = (ev: PointerEvent) => {
-      isDragging = true;
-      lastPointer = new THREE.Vector2(ev.clientX, ev.clientY);
-      host.setPointerCapture(ev.pointerId);
-    };
-
-    const onPointerMove = (ev: PointerEvent) => {
-      if (!isDragging) return;
-      pan(ev.clientX - lastPointer.x, ev.clientY - lastPointer.y);
-      lastPointer.set(ev.clientX, ev.clientY);
-    };
-
-    const endDrag = (ev: PointerEvent) => {
-      isDragging = false;
-      try {
-        host.releasePointerCapture(ev.pointerId);
-      } catch {
-        /* ignore */
-      }
-    };
-
-    const onKeyDown = (ev: KeyboardEvent) => {
-      if (ev.code in keys) {
-        keys[ev.code] = true;
-        ev.preventDefault();
-      }
-    };
-    const onKeyUp = (ev: KeyboardEvent) => {
-      if (ev.code in keys) {
-        keys[ev.code] = false;
-        ev.preventDefault();
-      }
-    };
-
-    const resize = () => {
-      const width = host.clientWidth || window.innerWidth;
-      const height = host.clientHeight || window.innerHeight;
-      renderer.setSize(width, height, false);
-      camera.aspect = width / height;
-      camera.updateProjectionMatrix();
-    };
-
-    resize();
-    window.addEventListener('resize', resize);
-    host.addEventListener('pointerdown', onPointerDown);
-    host.addEventListener('pointermove', onPointerMove);
-    host.addEventListener('pointerup', endDrag);
-    host.addEventListener('pointerleave', endDrag);
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
-
-    let animationId = 0;
-    let lastFrame = -1;
-    let lastTime = performance.now();
+    window.addEventListener('resize', onResize);
 
     const renderLoop = () => {
-      animationId = requestAnimationFrame(renderLoop);
-      const state = useFrameStore.getState();
       const now = performance.now();
       const dt = (now - lastTime) / 1000;
       lastTime = now;
 
-      if (state.positions && state.frame !== lastFrame) {
-        const attr = geometry.getAttribute('position') as THREE.BufferAttribute;
-        if (!attr || attr.count !== state.bodyCount) {
-          geometry.setAttribute('position', new THREE.BufferAttribute(state.positions, 3));
-          needsFitRef.current = true;
+      const state = useFrameStore.getState();
+      const {
+        positions,
+        velocities,
+        frame,
+        bodyCount,
+        showVelocityVectors,
+        showAccelerationVectors,
+        lastFrameTime
+      } = state;
+
+      if (positions && velocities && frame !== lastFrame) {
+        lastFrame = frame;
+        const bodyCountChanged = bodyCount !== lastBodyCount;
+
+        if (bodyCountChanged) {
+          needsFit = true;
+          lastBodyCount = bodyCount;
+        }
+
+        boundsRadius = computeBounds(positions, bodyCount, boundsCenter);
+        if (speedScratch.length !== bodyCount) {
+          speedScratch = new Float32Array(bodyCount);
+        }
+        if (accelerationVectorScratch.length !== bodyCount * 3) {
+          accelerationVectorScratch = new Float32Array(bodyCount * 3);
+        }
+        if (accelerationMagnitudeScratch.length !== bodyCount) {
+          accelerationMagnitudeScratch = new Float32Array(bodyCount);
+        }
+
+        for (let i = 0; i < bodyCount; i++) {
+          const base = i * 3;
+          const vx = velocities[base];
+          const vy = velocities[base + 1];
+          const vz = velocities[base + 2];
+          speedScratch[i] = Math.sqrt(vx * vx + vy * vy + vz * vz);
+        }
+
+        const [speedMin, speedMax] = percentileRange(speedScratch, bodyCount, 0.05, 0.95);
+        const speedSpan = Math.max(speedMax - speedMin, 1e-6);
+
+        const hasPrevious =
+          previousVelocitySnapshot.length === velocities.length
+          && previousFrameSampleTime > 0
+          && lastFrameTime > previousFrameSampleTime;
+        const deltaTimeSec = hasPrevious ? (lastFrameTime - previousFrameSampleTime) / 1000 : 0;
+        const invDeltaTime = deltaTimeSec > 1e-6 ? 1 / deltaTimeSec : 0;
+
+        if (hasPrevious && invDeltaTime > 0) {
+          for (let i = 0; i < bodyCount; i++) {
+            const base = i * 3;
+            const ax = (velocities[base] - previousVelocitySnapshot[base]) * invDeltaTime;
+            const ay = (velocities[base + 1] - previousVelocitySnapshot[base + 1]) * invDeltaTime;
+            const az = (velocities[base + 2] - previousVelocitySnapshot[base + 2]) * invDeltaTime;
+            accelerationVectorScratch[base] = ax;
+            accelerationVectorScratch[base + 1] = ay;
+            accelerationVectorScratch[base + 2] = az;
+            accelerationMagnitudeScratch[i] = Math.sqrt(ax * ax + ay * ay + az * az);
+          }
         } else {
-          (attr.array as Float32Array).set(state.positions);
-          attr.needsUpdate = true;
-        }
-        geometry.computeBoundingSphere();
-
-        if (needsFitRef.current) {
-          fitCameraToPoints();
-          needsFitRef.current = false;
+          accelerationVectorScratch.fill(0);
+          accelerationMagnitudeScratch.fill(0);
         }
 
-        if (!spheres || spheres.count !== state.bodyCount) {
-          if (spheres) {
-            scene.remove(spheres);
-            spheres.dispose();
-          }
-          const capacity = Math.max(state.bodyCount, 1);
-          spheres = new THREE.InstancedMesh(sphereGeometry, sphereMaterial, capacity);
-          spheres.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-          scene.add(spheres);
+        const [accMin, accMax] = percentileRange(accelerationMagnitudeScratch, bodyCount, 0.05, 0.95);
+        const accSpan = Math.max(accMax - accMin, 1e-6);
+
+        bodyRadius = BODY_SPHERE_RADIUS;
+        bodyInstances.setBodyRadius(bodyRadius);
+        bodyInstances.update(
+          positions,
+          speedScratch,
+          bodyCount,
+          speedMin,
+          speedSpan,
+          camera.position,
+          BILLBOARD_SWITCH_DISTANCE * BILLBOARD_SWITCH_DISTANCE
+        );
+        latestPositions = positions;
+        latestVelocities = velocities;
+        latestAccelerationVectors = accelerationVectorScratch;
+        latestAccelerationMagnitudes = accelerationMagnitudeScratch;
+        latestSpeedMin = speedMin;
+        latestSpeedSpan = speedSpan;
+        latestAccelerationMin = accMin;
+        latestAccelerationSpan = accSpan;
+        lastBodyUpdateCameraPos.copyFrom(camera.position);
+
+        if (showVelocityVectors) {
+          vectorOverlays.update('velocity', positions, velocities, speedScratch, bodyCount, speedMin, speedSpan, vectorScaleRadius);
+        }
+        if (showAccelerationVectors) {
+          vectorOverlays.update(
+            'acceleration',
+            positions,
+            accelerationVectorScratch,
+            accelerationMagnitudeScratch,
+            bodyCount,
+            accMin,
+            accSpan,
+            vectorScaleRadius
+          );
         }
 
-        if (spheres) {
-          instanceScale.set(bodyRadius, bodyRadius, bodyRadius);
-          instanceQuat.identity();
-
-          for (let i = 0; i < state.bodyCount; i++) {
-            instancePos.set(state.positions[i * 3], state.positions[i * 3 + 1], state.positions[i * 3 + 2]);
-            instanceMatrix.compose(instancePos, instanceQuat, instanceScale);
-            spheres.setMatrixAt(i, instanceMatrix);
-          }
-          spheres.count = state.bodyCount;
-          spheres.instanceMatrix.needsUpdate = true;
+        if (previousVelocitySnapshot.length !== velocities.length) {
+          previousVelocitySnapshot = new Float32Array(velocities.length);
         }
+        previousVelocitySnapshot.set(velocities);
+        previousFrameSampleTime = lastFrameTime;
 
-        lastFrame = state.frame;
-      }
-
-      // WASD fly-style movement in the ground plane
-      if (keys.KeyW || keys.KeyA || keys.KeyS || keys.KeyD) {
-        forward.copy(camera.getWorldDirection(forward));
-        forward.y = 0;
-        if (forward.lengthSq() > 0) forward.normalize();
-        panRight.crossVectors(forward, camera.up).normalize();
-
-        moveDelta.set(0, 0, 0);
-        const distance = camera.position.distanceTo(target);
-        const moveSpeed = Math.max(1, distance * 0.5) * dt;
-
-        if (keys.KeyW) moveDelta.add(forward);
-        if (keys.KeyS) moveDelta.sub(forward);
-        if (keys.KeyD) moveDelta.add(panRight);
-        if (keys.KeyA) moveDelta.sub(panRight);
-
-        if (moveDelta.lengthSq() > 0) {
-          moveDelta.normalize().multiplyScalar(moveSpeed);
-          camera.position.add(moveDelta);
-          target.add(moveDelta);
+        if (needsFit) {
+          cameraRig.fitToBounds();
+          needsFit = false;
         }
       }
 
-      camera.lookAt(target);
-      renderer.render(scene, camera);
+      if (showVelocityVectors !== previousVelocityVectorsVisible) {
+        if (showVelocityVectors) {
+          if (latestPositions && latestVelocities && speedScratch.length === lastBodyCount && lastBodyCount > 0) {
+            vectorOverlays.update(
+              'velocity',
+              latestPositions,
+              latestVelocities,
+              speedScratch,
+              lastBodyCount,
+              latestSpeedMin,
+              latestSpeedSpan,
+              vectorScaleRadius
+            );
+          }
+        } else {
+          vectorOverlays.clear('velocity');
+        }
+      }
+      previousVelocityVectorsVisible = showVelocityVectors;
+
+      if (showAccelerationVectors !== previousAccelerationVectorsVisible) {
+        if (showAccelerationVectors) {
+          if (
+            latestPositions
+            && latestAccelerationVectors
+            && latestAccelerationMagnitudes
+            && lastBodyCount > 0
+          ) {
+            vectorOverlays.update(
+              'acceleration',
+              latestPositions,
+              latestAccelerationVectors,
+              latestAccelerationMagnitudes,
+              lastBodyCount,
+              latestAccelerationMin,
+              latestAccelerationSpan,
+              vectorScaleRadius
+            );
+          }
+        } else {
+          vectorOverlays.clear('acceleration');
+        }
+      }
+      previousAccelerationVectorsVisible = showAccelerationVectors;
+
+      cameraRig.update(dt);
+
+      // Refresh body classification only when camera moved and we have cached frame data.
+      if (latestPositions && speedScratch.length === lastBodyCount && lastBodyCount > 0) {
+        const camDx = camera.position.x - lastBodyUpdateCameraPos.x;
+        const camDy = camera.position.y - lastBodyUpdateCameraPos.y;
+        const camDz = camera.position.z - lastBodyUpdateCameraPos.z;
+        const cameraMovedSq = camDx * camDx + camDy * camDy + camDz * camDz;
+        if (cameraMovedSq > 1e-6) {
+          bodyInstances.update(
+            latestPositions,
+            speedScratch,
+            lastBodyCount,
+            latestSpeedMin,
+            latestSpeedSpan,
+            camera.position,
+            BILLBOARD_SWITCH_DISTANCE * BILLBOARD_SWITCH_DISTANCE
+          );
+          lastBodyUpdateCameraPos.copyFrom(camera.position);
+        }
+      }
+
+      if (lastBodyCount > 0) {
+        const distanceToCenter = Vector3.Distance(camera.position, boundsCenter);
+        const cloudRadius = Math.max(boundsRadius, bodyRadius * 2);
+        const closestBodyDistance = Math.max(distanceToCenter - cloudRadius, 0);
+        const nextMinZ = Math.max(0.01, Math.min(5, closestBodyDistance * 0.2));
+        const nextMaxZ = Math.max(10000, distanceToCenter + cloudRadius * 3 + 100);
+        camera.minZ = nextMinZ;
+        camera.maxZ = nextMaxZ;
+      }
+
+      scene.render();
     };
 
-    renderLoop();
+    engine.runRenderLoop(renderLoop);
 
     return () => {
-      cancelAnimationFrame(animationId);
-      window.removeEventListener('resize', resize);
-      host.removeEventListener('pointerdown', onPointerDown);
-      host.removeEventListener('pointermove', onPointerMove);
-      host.removeEventListener('pointerup', endDrag);
-      host.removeEventListener('pointerleave', endDrag);
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
-      geometry.dispose();
-      sphereGeometry.dispose();
-      sphereMaterial.dispose();
-      spheres?.dispose();
-      renderer.dispose();
-      host.removeChild(renderer.domElement);
+      engine.stopRenderLoop(renderLoop);
+      window.removeEventListener('resize', onResize);
+      cameraRig.dispose();
+      canvas.removeEventListener('contextmenu', preventContextMenu);
+      bodyInstances.dispose();
+      vectorOverlays.dispose();
+      scene.dispose();
+      engine.dispose();
+      if (host.contains(canvas)) host.removeChild(canvas);
     };
   }, []);
 

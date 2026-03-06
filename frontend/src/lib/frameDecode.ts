@@ -2,7 +2,7 @@ import { ByteBuffer } from 'flatbuffers';
 import { FrameSample } from '../flatbuffers/frame_sample_generated';
 import type { FramePayload } from '../state/useFrameStore';
 
-// Decode a single length-delimited FlatBuffer frame into renderable positions.
+// Decode a single length-delimited FlatBuffer frame into renderable positions and velocities.
 export function decodeFrame(buf: Uint8Array): FramePayload | null {
   const bb = new ByteBuffer(buf);
   if (!FrameSample.bufferHasIdentifier(bb)) return null;
@@ -42,17 +42,26 @@ export function decodeFrame(buf: Uint8Array): FramePayload | null {
   }
 
   const positions = new Float32Array(bodyCount * 3);
-  for (let i = 0, j = 0; i < bodyCount; i += 1) {
+  const velocities = new Float32Array(bodyCount * 3);
+  for (let i = 0, j = 0, k = 0; i < bodyCount; i += 1) {
     const base = i * 6;
     positions[j++] = bodies[base];
     positions[j++] = bodies[base + 1];
     positions[j++] = bodies[base + 2];
+
+    const vx = bodies[base + 3];
+    const vy = bodies[base + 4];
+    const vz = bodies[base + 5];
+    velocities[k++] = vx;
+    velocities[k++] = vy;
+    velocities[k++] = vz;
   }
 
   return {
     frame: frame.frame(),
     bodyCount,
     positions,
+    velocities,
     receivedAt: performance.now(),
     bytes: buf.byteLength
   };

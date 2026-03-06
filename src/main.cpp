@@ -1,5 +1,4 @@
 #include <iostream>
-#include <fstream>
 #include <random>
 #include <chrono>
 #include <thread>
@@ -32,11 +31,10 @@ namespace {
         #endif
     }
 
-    void writeFrameToOutputs(const ParticleSystem& system,
-                            int frame,
-                            flatbuffers::FlatBufferBuilder& builder,
-                            ofstream* out,
-                            FrameBroadcaster* broadcaster) {
+    void broadcastFrame(const ParticleSystem& system,
+                        int frame,
+                        flatbuffers::FlatBufferBuilder& builder,
+                        FrameBroadcaster& broadcaster) {
         builder.Clear();
 
         float* interleaved = nullptr;
@@ -65,18 +63,10 @@ namespace {
         const uint32_t payloadSize = static_cast<uint32_t>(builder.GetSize());
         const uint32_t lenLE = toLittleEndian(payloadSize);
 
-        if (out && out->is_open()) {
-            out->write(reinterpret_cast<const char*>(&lenLE), sizeof(lenLE));
-            out->write(reinterpret_cast<const char*>(builder.GetBufferPointer()),
-                    static_cast<streamsize>(payloadSize));
-        }
-
-        if (broadcaster) {
-            auto packet = make_shared<vector<uint8_t>>(sizeof(lenLE) + payloadSize);
-            memcpy(packet->data(), &lenLE, sizeof(lenLE));
-            memcpy(packet->data() + sizeof(lenLE), builder.GetBufferPointer(), payloadSize);
-            broadcaster->broadcast(packet);
-        }
+        auto packet = make_shared<vector<uint8_t>>(sizeof(lenLE) + payloadSize);
+        memcpy(packet->data(), &lenLE, sizeof(lenLE));
+        memcpy(packet->data() + sizeof(lenLE), builder.GetBufferPointer(), payloadSize);
+        broadcaster.broadcast(packet);
     }
 
 }
@@ -132,7 +122,8 @@ int main() {
 
     // ------------------INITIALIZE SYSTEM------------------//
     
-    const size_t NUM_PARTICLES = 100; // # of particles in system
+    const size_t NUM_PARTICLES = 10000; // # of particles in system
+    const size_t MAX_FPS = 100; // frame cap for output/write loop (set 0 to disable)
     ParticleSystem system;
     
     const float dt = 0.016667f; // fixed time step length (60 ticks per sim second)
@@ -146,12 +137,6 @@ int main() {
     // populate acceleration at t=0 for correct first Verlet step
     initializeForces(system);
 
-    // export sampled positions and velocities for visualization as size-prefixed FlatBuffers
-    ofstream out("frontend/frames.fb", ios::binary);
-    if (!out) {
-        cerr << "Failed to open output file: frontend/frames.fb\n";
-        return 1;
-    }
     // start WebSocket broadcaster on ws://localhost:8080/frames
     boost::asio::io_context ioc;
     FrameBroadcaster broadcaster(ioc, 8080);
@@ -159,6 +144,12 @@ int main() {
 
     flatbuffers::FlatBufferBuilder frameBuilder(
                     128 + NUM_PARTICLES * 6 * sizeof(float));
+
+    const auto targetFrameDuration =
+        (MAX_FPS > 0)
+            ? chrono::duration_cast<chrono::steady_clock::duration>(
+                chrono::duration<double>(1.0 / static_cast<double>(MAX_FPS)))
+            : chrono::steady_clock::duration::zero();
 
     // ---------------------PHYSICS LOOP---------------------//
     cout << "Starting physics loop benchmark for "
@@ -169,16 +160,28 @@ int main() {
 
         // the core execution loop
         while (g_running) {
-            auto frameStart = chrono::high_resolution_clock::now();
+            auto frameStart = chrono::steady_clock::now();
+            auto computeStart = chrono::high_resolution_clock::now();
 
                 // execute one step of the Velocity Verlet and Barnes-Hut algorithm
                 physicsTick(system, dt);
 
-            auto frameEnd = chrono::high_resolution_clock::now();
-            chrono::duration<double, milli> frameTime = frameEnd - frameStart;
+            auto computeEnd = chrono::high_resolution_clock::now();
+            chrono::duration<double, milli> frameTime = computeEnd - computeStart;
 
-            // write simulation data for every frame as interleaved FlatBuffers
-            writeFrameToOutputs(system, currentFrame, frameBuilder, &out, &broadcaster);
+            // stream simulation data for every frame as interleaved FlatBuffers
+            broadcastFrame(system, currentFrame, frameBuilder, broadcaster);
+
+            if (MAX_FPS > 0) {
+                const auto targetFrameEnd = frameStart + targetFrameDuration;
+                #if defined(_WIN32)
+                    // Windows sleep granularity is often too coarse for 5ms pacing; 
+                    while (chrono::steady_clock::now() < targetFrameEnd)
+                        this_thread::yield();
+                #else
+                    this_thread::sleep_until(targetFrameEnd);
+                #endif
+            }
             
             // output performance metrics every 50 frames
             if (currentFrame % 50 == 0) 

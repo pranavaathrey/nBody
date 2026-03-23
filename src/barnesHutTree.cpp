@@ -1,5 +1,7 @@
 #include "nBodySim.hpp"
 
+// TODO: deal with distant outliers slowing the simulation
+
 namespace {
 inline bool isLeaf(const OctreeNode& node) {
     for (int i = 0; i < 8; ++i) 

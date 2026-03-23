@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { ORBIT_TRAILS_ENABLED, WORLD_GRID_ENABLED } from '../lib/config';
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
@@ -22,6 +23,8 @@ export type FrameState = {
   lastFrameTime: number;
   showVelocityVectors: boolean;
   showAccelerationVectors: boolean;
+  showOrbitTrails: boolean;
+  showWorldGrid: boolean;
   invertLook: boolean;
   cameraBaseMoveSpeed: number;
 };
@@ -31,6 +34,8 @@ export type FrameActions = {
   setStatus: (status: ConnectionStatus) => void;
   setShowVelocityVectors: (show: boolean) => void;
   setShowAccelerationVectors: (show: boolean) => void;
+  setShowOrbitTrails: (show: boolean) => void;
+  setShowWorldGrid: (show: boolean) => void;
   setInvertLook: (invert: boolean) => void;
   setCameraBaseMoveSpeed: (speed: number) => void;
   reset: () => void;
@@ -47,6 +52,8 @@ export const useFrameStore = create<FrameState & FrameActions>((set, get) => ({
   lastFrameTime: performance.now(),
   showVelocityVectors: false,
   showAccelerationVectors: false,
+  showOrbitTrails: ORBIT_TRAILS_ENABLED,
+  showWorldGrid: WORLD_GRID_ENABLED,
   invertLook: false,
   cameraBaseMoveSpeed: 300,
   pushFrame: ({ frame, bodyCount, positions, velocities, receivedAt, bytes }) => {
@@ -66,6 +73,8 @@ export const useFrameStore = create<FrameState & FrameActions>((set, get) => ({
   setStatus: (status: ConnectionStatus) => set({ status }),
   setShowVelocityVectors: (show: boolean) => set({ showVelocityVectors: show }),
   setShowAccelerationVectors: (show: boolean) => set({ showAccelerationVectors: show }),
+  setShowOrbitTrails: (show: boolean) => set({ showOrbitTrails: show }),
+  setShowWorldGrid: (show: boolean) => set({ showWorldGrid: show }),
   setInvertLook: (invert: boolean) => set({ invertLook: invert }),
   setCameraBaseMoveSpeed: (speed: number) =>
     set({
@@ -83,6 +92,8 @@ export const useFrameStore = create<FrameState & FrameActions>((set, get) => ({
       lastFrameTime: performance.now(),
       showVelocityVectors: false,
       showAccelerationVectors: false,
+      showOrbitTrails: ORBIT_TRAILS_ENABLED,
+      showWorldGrid: WORLD_GRID_ENABLED,
       invertLook: false,
       cameraBaseMoveSpeed: 300
     })

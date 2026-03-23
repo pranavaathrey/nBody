@@ -14,6 +14,8 @@
 #include <csignal>
 #include <atomic>
 
+// TODO: add play/pause, speed controls
+
 namespace {
 
     atomic<bool> g_running{true};
@@ -71,7 +73,7 @@ namespace {
 
 }
 
-void initializeGalacticDisk(ParticleSystem& system, size_t count) {
+void initializeAccretionDisk(ParticleSystem& system, size_t count) {
     // gravitational constant and system parameters
     const float G = 1.0f; 
     const float centralMass = 100000.0f;
@@ -133,7 +135,7 @@ int main() {
     // allocate contiguous memory
     system.allocate(NUM_PARTICLES);
     // seed initial positions, masses, and velocities
-    initializeGalacticDisk(system, NUM_PARTICLES); 
+    initializeAccretionDisk(system, NUM_PARTICLES); 
     // populate acceleration at t=0 for correct first Verlet step
     initializeForces(system);
 

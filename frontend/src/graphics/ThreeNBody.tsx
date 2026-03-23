@@ -9,7 +9,8 @@ import {
   Vector3
 } from '@babylonjs/core';
 import {
-  BILLBOARD_SWITCH_DISTANCE,
+  DESKTOP_BILLBOARD_SWITCH_DISTANCE,
+  MOBILE_BILLBOARD_SWITCH_DISTANCE,
   BODY_SPHERE_RADIUS,
   VECTOR_OVERLAY_SCALE_RADIUS
 } from '../lib/config';
@@ -17,10 +18,21 @@ import { useFrameStore } from '../state/useFrameStore';
 import { createBodyInstancesRenderer } from './threeNBody/bodyInstances';
 import { createCameraRig } from './threeNBody/cameraRig';
 import { computeBounds, percentileRange } from './threeNBody/math';
+import { createOrbitTrailManager } from './threeNBody/orbitTrails';
 import { createVectorOverlayManager } from './threeNBody/vectorOverlays';
+import { createWorldGridRenderer } from './threeNBody/worldGrid';
 
-export function ThreeNBody() {
+type ThreeNBodyProps = {
+  virtualMoveX?: number;
+  virtualMoveY?: number;
+};
+
+export function ThreeNBody({ virtualMoveX = 0, virtualMoveY = 0 }: ThreeNBodyProps) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const virtualMoveRef = useRef({ x: virtualMoveX, y: virtualMoveY });
+
+  virtualMoveRef.current.x = virtualMoveX;
+  virtualMoveRef.current.y = virtualMoveY;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -58,7 +70,10 @@ export function ThreeNBody() {
     dir.intensity = 1.1;
 
     const bodyInstances = createBodyInstancesRenderer(scene);
+    const orbitTrails = createOrbitTrailManager(scene);
+    const worldGrid = createWorldGridRenderer(scene);
     const vectorOverlays = createVectorOverlayManager(scene);
+    worldGrid.setVisible(useFrameStore.getState().showWorldGrid);
 
     let bodyRadius = BODY_SPHERE_RADIUS;
     let lastFrame = -1;
@@ -74,6 +89,8 @@ export function ThreeNBody() {
     let previousFrameSampleTime = 0;
     let previousVelocityVectorsVisible = false;
     let previousAccelerationVectorsVisible = false;
+    let previousOrbitTrailsVisible = useFrameStore.getState().showOrbitTrails;
+    let previousWorldGridVisible = useFrameStore.getState().showWorldGrid;
     let latestPositions: Float32Array | null = null;
     let latestVelocities: Float32Array | null = null;
     let latestAccelerationVectors: Float32Array | null = null;
@@ -90,9 +107,28 @@ export function ThreeNBody() {
       camera,
       getBoundsCenter: () => boundsCenter,
       getBoundsRadius: () => boundsRadius,
+      getVirtualMoveAxes: () => virtualMoveRef.current,
       getInvertLook: () => useFrameStore.getState().invertLook,
-      getBaseMoveSpeed: () => useFrameStore.getState().cameraBaseMoveSpeed
+      getBaseMoveSpeed: () => useFrameStore.getState().cameraBaseMoveSpeed,
+      setBaseMoveSpeed: (speed) => useFrameStore.getState().setCameraBaseMoveSpeed(speed)
     });
+
+    function isMobileDevice(): boolean {
+      if (typeof window === 'undefined') return false;
+      try {
+        return (
+          'ontouchstart' in window ||
+          (navigator as any).maxTouchPoints > 0 ||
+          (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) ||
+          window.innerWidth <= 768
+        );
+      } catch {
+        return false;
+      }
+    }
+    const BILLBOARD_SWITCH_DISTANCE = isMobileDevice()
+      ? MOBILE_BILLBOARD_SWITCH_DISTANCE
+      : DESKTOP_BILLBOARD_SWITCH_DISTANCE;
 
     const onResize = () => {
       engine.setHardwareScalingLevel(1 / Math.min(window.devicePixelRatio || 1, 1.5));
@@ -114,6 +150,8 @@ export function ThreeNBody() {
         bodyCount,
         showVelocityVectors,
         showAccelerationVectors,
+        showOrbitTrails,
+        showWorldGrid,
         lastFrameTime
       } = state;
 
@@ -185,6 +223,9 @@ export function ThreeNBody() {
           camera.position,
           BILLBOARD_SWITCH_DISTANCE * BILLBOARD_SWITCH_DISTANCE
         );
+        if (showOrbitTrails) {
+          orbitTrails.update(frame, positions, speedScratch, bodyCount, speedMin, speedSpan);
+        }
         latestPositions = positions;
         latestVelocities = velocities;
         latestAccelerationVectors = accelerationVectorScratch;
@@ -268,7 +309,22 @@ export function ThreeNBody() {
       }
       previousAccelerationVectorsVisible = showAccelerationVectors;
 
+      if (showOrbitTrails !== previousOrbitTrailsVisible) {
+        if (!showOrbitTrails) {
+          orbitTrails.clear();
+        }
+      }
+      previousOrbitTrailsVisible = showOrbitTrails;
+
+      if (showWorldGrid !== previousWorldGridVisible) {
+        worldGrid.setVisible(showWorldGrid);
+      }
+      previousWorldGridVisible = showWorldGrid;
+
       cameraRig.update(dt);
+      if (showWorldGrid) {
+        worldGrid.update(camera.position);
+      }
 
       // Refresh body classification only when camera moved and we have cached frame data.
       if (latestPositions && speedScratch.length === lastBodyCount && lastBodyCount > 0) {
@@ -311,6 +367,8 @@ export function ThreeNBody() {
       cameraRig.dispose();
       canvas.removeEventListener('contextmenu', preventContextMenu);
       bodyInstances.dispose();
+      orbitTrails.dispose();
+      worldGrid.dispose();
       vectorOverlays.dispose();
       scene.dispose();
       engine.dispose();

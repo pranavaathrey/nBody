@@ -1,12 +1,48 @@
 import { Matrix, Quaternion, UniversalCamera, Vector3 } from '@babylonjs/core';
 
+export const CAMERA_SPEED_MIN = 10;
+export const CAMERA_SPEED_MAX = 1_000_000;
+
+const CAMERA_SPEED_LOG_MIN = Math.log10(CAMERA_SPEED_MIN);
+const CAMERA_SPEED_LOG_MAX = Math.log10(CAMERA_SPEED_MAX);
+const CAMERA_SPEED_WHEEL_SLIDER_STEP = 0.02;
+
+export function speedToLogSliderValue(speed: number): number {
+  const clamped = Math.max(CAMERA_SPEED_MIN, Math.min(CAMERA_SPEED_MAX, speed));
+  const normalized =
+    (Math.log10(clamped) - CAMERA_SPEED_LOG_MIN) / (CAMERA_SPEED_LOG_MAX - CAMERA_SPEED_LOG_MIN);
+  return Math.max(0, Math.min(1, normalized));
+}
+
+export function logSliderValueToSpeed(sliderValue: number): number {
+  const normalized = Math.max(0, Math.min(1, sliderValue));
+  const exponent = CAMERA_SPEED_LOG_MIN + normalized * (CAMERA_SPEED_LOG_MAX - CAMERA_SPEED_LOG_MIN);
+  return Math.round(Math.pow(10, exponent));
+}
+
+export function wheelDeltaToCameraSpeed(currentSpeed: number, deltaY: number): number {
+  if (deltaY === 0) {
+    return currentSpeed;
+  }
+
+  const sliderValue = speedToLogSliderValue(currentSpeed);
+  const direction = deltaY < 0 ? 1 : -1;
+  const nextSliderValue = Math.max(
+    0,
+    Math.min(1, sliderValue + direction * CAMERA_SPEED_WHEEL_SLIDER_STEP)
+  );
+  return logSliderValueToSpeed(nextSliderValue);
+}
+
 type CameraRigOptions = {
   canvas: HTMLCanvasElement;
   camera: UniversalCamera;
   getBoundsCenter: () => Vector3;
   getBoundsRadius: () => number;
+  getVirtualMoveAxes: () => { x: number; y: number };
   getInvertLook: () => boolean;
   getBaseMoveSpeed: () => number;
+  setBaseMoveSpeed: (speed: number) => void;
 };
 
 export type CameraRig = {
@@ -22,8 +58,10 @@ export function createCameraRig(options: CameraRigOptions): CameraRig {
     camera,
     getBoundsCenter,
     getBoundsRadius,
+    getVirtualMoveAxes,
     getInvertLook,
-    getBaseMoveSpeed
+    getBaseMoveSpeed,
+    setBaseMoveSpeed
   } = options;
 
   let orientation = Quaternion.FromEulerAngles(0, Math.PI, 0);
@@ -34,6 +72,11 @@ export function createCameraRig(options: CameraRigOptions): CameraRig {
   let isDragging = false;
   let dragButton: number | null = null;
   const lastPointer = { x: 0, y: 0 };
+  const touchPointers = new Map<number, { x: number; y: number }>();
+  let touchMode: 'none' | 'single' | 'multi' = 'none';
+  let lastTouchCenter = { x: 0, y: 0 };
+  let lastTouchDistance = 0;
+  let lastTouchAngle = 0;
   const keys: Record<string, boolean> = {
     KeyW: false,
     KeyA: false,
@@ -53,6 +96,16 @@ export function createCameraRig(options: CameraRigOptions): CameraRig {
   const upDir = new Vector3();
   const moveDelta = new Vector3();
   const rotMat = Matrix.Identity();
+
+  const normalizeAngleDelta = (delta: number) => {
+    if (delta > Math.PI) {
+      return delta - Math.PI * 2;
+    }
+    if (delta < -Math.PI) {
+      return delta + Math.PI * 2;
+    }
+    return delta;
+  };
 
   const updateOrientationVectors = () => {
     orientation.normalize();
@@ -87,7 +140,88 @@ export function createCameraRig(options: CameraRigOptions): CameraRig {
     applyCameraTransform();
   };
 
+  const clampDistanceFromBoundsCenter = () => {
+    const boundsCenter = getBoundsCenter();
+    const offset = camPos.subtract(boundsCenter);
+    const distance = offset.length();
+    const clampedDistance = Math.max(minDistance, Math.min(maxDistance, distance));
+
+    if (!Number.isFinite(distance) || distance < 1e-6) {
+      camPos = boundsCenter.subtract(forwardDir.scale(clampedDistance));
+      return;
+    }
+
+    if (Math.abs(clampedDistance - distance) > 1e-6) {
+      camPos = boundsCenter.add(offset.scale(clampedDistance / distance));
+    }
+  };
+
+  const applyTouchOrbit = (dx: number, dy: number) => {
+    const sensitivity = 0.003;
+    updateOrientationVectors();
+    const invert = getInvertLook();
+    const yawDelta = dx * sensitivity * (invert ? -1 : 1);
+    const pitchDelta = dy * sensitivity * (invert ? -1 : 1);
+    const yawRotation = Quaternion.RotationAxis(upDir, yawDelta);
+    const pitchRotation = Quaternion.RotationAxis(rightDir, pitchDelta);
+    orientation = pitchRotation.multiply(yawRotation).multiply(orientation);
+    orientation.normalize();
+  };
+
+  const applyTouchPan = (dx: number, dy: number) => {
+    const panSensitivity = 0.4;
+    updateOrientationVectors();
+    camPos.addInPlace(rightDir.scale(-dx * panSensitivity));
+    camPos.addInPlace(upDir.scale(dy * panSensitivity));
+  };
+
+  const applyTouchRoll = (angleDelta: number) => {
+    updateOrientationVectors();
+    const rollRotation = Quaternion.RotationAxis(forwardDir, angleDelta);
+    orientation = rollRotation.multiply(orientation);
+    orientation.normalize();
+  };
+
+  const applyTouchZoom = (distanceDelta: number) => {
+    updateOrientationVectors();
+    const distanceToCenter = Vector3.Distance(camPos, getBoundsCenter());
+    const zoomSensitivity = Math.max(distanceToCenter * 0.01, minDistance * 0.5, 0.02);
+    camPos.addInPlace(forwardDir.scale(distanceDelta * zoomSensitivity));
+    clampDistanceFromBoundsCenter();
+  };
+
+  const resetTouchGestureReference = () => {
+    const points = [...touchPointers.values()];
+    if (points.length === 0) {
+      touchMode = 'none';
+      return;
+    }
+
+    if (points.length === 1) {
+      touchMode = 'single';
+      lastPointer.x = points[0].x;
+      lastPointer.y = points[0].y;
+      return;
+    }
+
+    const [p1, p2] = points;
+    touchMode = 'multi';
+    lastTouchCenter = {
+      x: (p1.x + p2.x) * 0.5,
+      y: (p1.y + p2.y) * 0.5
+    };
+    lastTouchDistance = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+    lastTouchAngle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+  };
+
   const onPointerDown = (ev: PointerEvent) => {
+    if (ev.pointerType === 'touch') {
+      touchPointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+      canvas.setPointerCapture(ev.pointerId);
+      resetTouchGestureReference();
+      return;
+    }
+
     isDragging = true;
     dragButton = ev.button;
     lastPointer.x = ev.clientX;
@@ -96,6 +230,51 @@ export function createCameraRig(options: CameraRigOptions): CameraRig {
   };
 
   const onPointerMove = (ev: PointerEvent) => {
+    if (ev.pointerType === 'touch') {
+      if (!touchPointers.has(ev.pointerId)) {
+        return;
+      }
+
+      touchPointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+      const points = [...touchPointers.values()];
+      if (points.length === 1) {
+        const point = points[0];
+        if (touchMode !== 'single') {
+          resetTouchGestureReference();
+          return;
+        }
+        const dx = point.x - lastPointer.x;
+        const dy = point.y - lastPointer.y;
+        applyTouchOrbit(dx, dy);
+        lastPointer.x = point.x;
+        lastPointer.y = point.y;
+        return;
+      }
+
+      if (points.length >= 2) {
+        const [p1, p2] = points;
+        const centerX = (p1.x + p2.x) * 0.5;
+        const centerY = (p1.y + p2.y) * 0.5;
+        const distance = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+        const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+
+        if (touchMode !== 'multi') {
+          resetTouchGestureReference();
+          return;
+        }
+
+        applyTouchPan(centerX - lastTouchCenter.x, centerY - lastTouchCenter.y);
+        applyTouchZoom(distance - lastTouchDistance);
+        applyTouchRoll(normalizeAngleDelta(angle - lastTouchAngle));
+
+        lastTouchCenter.x = centerX;
+        lastTouchCenter.y = centerY;
+        lastTouchDistance = distance;
+        lastTouchAngle = angle;
+      }
+      return;
+    }
+
     if (!isDragging) return;
     const dx = ev.clientX - lastPointer.x;
     const dy = ev.clientY - lastPointer.y;
@@ -130,6 +309,17 @@ export function createCameraRig(options: CameraRigOptions): CameraRig {
   };
 
   const endDrag = (ev: PointerEvent) => {
+    if (ev.pointerType === 'touch') {
+      touchPointers.delete(ev.pointerId);
+      try {
+        canvas.releasePointerCapture(ev.pointerId);
+      } catch {
+        // Ignore pointer capture release errors from stale pointer IDs.
+      }
+      resetTouchGestureReference();
+      return;
+    }
+
     isDragging = false;
     dragButton = null;
     try {
@@ -141,16 +331,8 @@ export function createCameraRig(options: CameraRigOptions): CameraRig {
 
   const onWheel = (ev: WheelEvent) => {
     ev.preventDefault();
-    applyCameraTransform();
-
-    const move = -ev.deltaY * 0.8;
-    camPos.addInPlace(forwardDir.scale(move));
-
-    const boundsCenter = getBoundsCenter();
-    const distFromBounds = camPos.subtract(boundsCenter).length();
-    const clampedDist = Math.min(Math.max(distFromBounds, minDistance), maxDistance);
-    const dirFromBounds = camPos.subtract(boundsCenter).normalize();
-    camPos = boundsCenter.add(dirFromBounds.scale(clampedDist));
+    const currentSpeed = getBaseMoveSpeed();
+    setBaseMoveSpeed(wheelDeltaToCameraSpeed(currentSpeed, ev.deltaY));
   };
 
   const onContextMenu = (ev: MouseEvent) => {
@@ -178,6 +360,7 @@ export function createCameraRig(options: CameraRigOptions): CameraRig {
   canvas.addEventListener('pointerdown', onPointerDown);
   canvas.addEventListener('pointermove', onPointerMove);
   canvas.addEventListener('pointerup', endDrag);
+  canvas.addEventListener('pointercancel', endDrag);
   canvas.addEventListener('pointerleave', endDrag);
   canvas.addEventListener('wheel', onWheel, { passive: false });
   canvas.addEventListener('contextmenu', onContextMenu);
@@ -195,18 +378,26 @@ export function createCameraRig(options: CameraRigOptions): CameraRig {
     updateOrientationVectors();
     moveDelta.set(0, 0, 0);
 
+    const virtualMove = getVirtualMoveAxes();
+
     if (keys.KeyW) moveDelta.addInPlace(forwardDir);
     if (keys.KeyS) moveDelta.subtractInPlace(forwardDir);
     if (keys.KeyD) moveDelta.addInPlace(rightDir);
     if (keys.KeyA) moveDelta.subtractInPlace(rightDir);
+    if (Math.abs(virtualMove.y) > 0.05) {
+      moveDelta.addInPlace(forwardDir.scale(-virtualMove.y));
+    }
+    if (Math.abs(virtualMove.x) > 0.05) {
+      moveDelta.addInPlace(rightDir.scale(virtualMove.x));
+    }
 
     if (moveDelta.lengthSquared() > 0) {
       moveDelta.normalize();
       const baseSpeed = getBaseMoveSpeed();
       let speedMultiplier = 1;
-      if (keys.AltLeft || keys.AltRight) speedMultiplier *= 10;
-      if (keys.ShiftLeft || keys.ShiftRight) speedMultiplier *= 3;
-      if (keys.ControlLeft || keys.ControlRight) speedMultiplier *= 0.2;
+      if (keys.AltLeft || keys.AltRight) speedMultiplier *= 8;
+      if (keys.ShiftLeft || keys.ShiftRight) speedMultiplier *= 0.2;
+      if (keys.ControlLeft || keys.ControlRight) speedMultiplier *= 2;
       const speed = baseSpeed * speedMultiplier * dt;
       moveDelta.scaleInPlace(speed);
       camPos.addInPlace(moveDelta);
@@ -221,6 +412,7 @@ export function createCameraRig(options: CameraRigOptions): CameraRig {
     canvas.removeEventListener('pointerdown', onPointerDown);
     canvas.removeEventListener('pointermove', onPointerMove);
     canvas.removeEventListener('pointerup', endDrag);
+    canvas.removeEventListener('pointercancel', endDrag);
     canvas.removeEventListener('pointerleave', endDrag);
     canvas.removeEventListener('wheel', onWheel);
     canvas.removeEventListener('contextmenu', onContextMenu);

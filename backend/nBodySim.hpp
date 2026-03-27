@@ -1,4 +1,6 @@
 
+#pragma once
+
 #include <vector>
 #include <cmath>
 #include <limits>
@@ -8,7 +10,7 @@
 
 using namespace std;
 
-// simulation constants
+// simulation constants (dimensionless toy units)
 const float G_CONST = 1.0f;       // gravitational constant
 const float THETA = 0.5f;         // Barnes-Hut threshold
 const float SOFTENING_SQ = 0.1f;  // softening factor squared to prevent infinite forces
@@ -97,6 +99,67 @@ struct ParticleSystem {
     inline void setForceZero(size_t idx) { setForce(idx, 0.0f, 0.0f, 0.0f); }
 
     inline size_t size() const { return count; }
+
+    inline void copyParticle(size_t dstIdx, size_t srcIdx) {
+        BodyBlock& dst = block(dstIdx);
+        const BodyBlock& src = block(srcIdx);
+        const size_t dstLane = laneIndex(dstIdx);
+        const size_t srcLane = laneIndex(srcIdx);
+
+        dst.posX[dstLane] = src.posX[srcLane];
+        dst.posY[dstLane] = src.posY[srcLane];
+        dst.posZ[dstLane] = src.posZ[srcLane];
+
+        dst.velX[dstLane] = src.velX[srcLane];
+        dst.velY[dstLane] = src.velY[srcLane];
+        dst.velZ[dstLane] = src.velZ[srcLane];
+
+        dst.forceX[dstLane] = src.forceX[srcLane];
+        dst.forceY[dstLane] = src.forceY[srcLane];
+        dst.forceZ[dstLane] = src.forceZ[srcLane];
+
+        dst.mass[dstLane] = src.mass[srcLane];
+        dst.invMass[dstLane] = src.invMass[srcLane];
+    }
+
+    size_t removeIndices(vector<size_t> indices) {
+        if (indices.empty() || count == 0) return 0;
+
+        sort(indices.begin(), indices.end());
+        indices.erase(unique(indices.begin(), indices.end()), indices.end());
+
+        size_t writeIdx = 0;
+        size_t removePos = 0;
+
+        for (size_t readIdx = 0; readIdx < count; ++readIdx) {
+            while (removePos < indices.size() && indices[removePos] < readIdx)
+                ++removePos;
+
+            if (removePos < indices.size() && indices[removePos] == readIdx) {
+                ++removePos;
+                continue;
+            }
+
+            if (writeIdx != readIdx)
+                copyParticle(writeIdx, readIdx);
+            ++writeIdx;
+        }
+
+        const size_t removed = count - writeIdx;
+        count = writeIdx;
+
+        if (count == 0) {
+            blocks.clear();
+            return removed;
+        }
+
+        const size_t blockCount = (count + BODY_BLOCK_SIZE - 1) / BODY_BLOCK_SIZE;
+        blocks.resize(blockCount);
+        for (size_t b = 0; b < blockCount; ++b)
+            blocks[b].count = static_cast<uint8_t>(min(BODY_BLOCK_SIZE, count - b * BODY_BLOCK_SIZE));
+
+        return removed;
+    }
 };
 struct OctreeNode {
     float centerMassX, centerMassY, centerMassZ; 

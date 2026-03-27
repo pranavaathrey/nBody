@@ -1,10 +1,18 @@
-#include "WebSocketServer.hpp"
+#include "webSocketServer.hpp"
 
 #include <boost/beast/http.hpp>
+#include <boost/beast/version.hpp>
 #include <iostream>
 
-FrameBroadcaster::FrameBroadcaster(boost::asio::io_context& ioc, unsigned short port)
-    : ioc_(ioc), acceptor_(ioc) {
+FrameBroadcaster::FrameBroadcaster(
+    boost::asio::io_context& ioc,
+    unsigned short port,
+    TextMessageHandler onTextMessage,
+    InitialTextMessageProvider initialTextMessageProvider)
+    : ioc_(ioc),
+      acceptor_(ioc),
+      onTextMessage_(std::move(onTextMessage)),
+      initialTextMessageProvider_(std::move(initialTextMessageProvider)) {
     boost::beast::error_code ec;
 
     const auto openEndpoint = [&](tcp::endpoint ep) {
@@ -70,7 +78,23 @@ void FrameBroadcaster::broadcast(const std::shared_ptr<std::vector<uint8_t>>& pa
 
     for (auto& session : sessions_) {
         if (session->isOpen()) {
-            session->send(payload);
+            session->sendBinary(payload);
+            stillAlive.push_back(session);
+        }
+    }
+    sessions_.swap(stillAlive);
+}
+
+void FrameBroadcaster::broadcastText(const std::string& message) {
+    const auto payload = std::make_shared<std::string>(message);
+
+    std::lock_guard<std::mutex> lock(sessionsMutex_);
+    std::vector<std::shared_ptr<Session>> stillAlive;
+    stillAlive.reserve(sessions_.size());
+
+    for (auto& session : sessions_) {
+        if (session->isOpen()) {
+            session->sendText(payload);
             stillAlive.push_back(session);
         }
     }
@@ -80,6 +104,15 @@ void FrameBroadcaster::broadcast(const std::shared_ptr<std::vector<uint8_t>>& pa
 void FrameBroadcaster::registerSession(const std::shared_ptr<Session>& session) {
     std::lock_guard<std::mutex> lock(sessionsMutex_);
     sessions_.push_back(session);
+}
+
+void FrameBroadcaster::handleTextMessage(const std::string& payload) {
+    if (onTextMessage_) onTextMessage_(payload);
+}
+
+std::string FrameBroadcaster::makeInitialTextMessage() const {
+    if (!initialTextMessageProvider_) return {};
+    return initialTextMessageProvider_();
 }
 
 void FrameBroadcaster::doAccept() {
@@ -111,9 +144,6 @@ void FrameBroadcaster::Session::run() {
             res.set(boost::beast::http::field::server, std::string("nbody-ws"));
         }));
 
-    // Ensure frames are sent as binary; the payload is raw FlatBuffer bytes.
-    ws_.binary(true);
-
     ws_.async_accept(
         [self = shared_from_this()](boost::beast::error_code ec) { self->onAccept(ec); });
 }
@@ -125,27 +155,80 @@ void FrameBroadcaster::Session::onAccept(boost::beast::error_code ec) {
     }
     std::cout << "WebSocket client connected\n";
     owner_.registerSession(shared_from_this());
+    const std::string initialMessage = owner_.makeInitialTextMessage();
+    if (!initialMessage.empty())
+        sendText(std::make_shared<std::string>(initialMessage));
+    doRead();
 }
 
-void FrameBroadcaster::Session::send(const std::shared_ptr<std::vector<uint8_t>>& payload) {
+void FrameBroadcaster::Session::sendBinary(const std::shared_ptr<std::vector<uint8_t>>& payload) {
     boost::asio::dispatch(ws_.get_executor(), [self = shared_from_this(), payload]() {
         const bool writing = !self->queue_.empty();
-        self->queue_.push_back(payload);
+        self->queue_.push_back(OutboundMessage{true, payload, {}});
         if (!writing) self->doWrite();
     });
 }
 
-void FrameBroadcaster::Session::doWrite() {
-    const auto msg = queue_.front();
-    ws_.async_write(
-        boost::asio::buffer(*msg),
-        [self = shared_from_this()](boost::beast::error_code ec, std::size_t) {
-            if (ec) {
-                std::cerr << "WebSocket write error: " << ec.message() << "\n";
-                self->queue_.clear();
-                return;
-            }
-            self->queue_.pop_front();
-            if (!self->queue_.empty()) self->doWrite();
+void FrameBroadcaster::Session::sendText(const std::shared_ptr<std::string>& payload) {
+    boost::asio::dispatch(ws_.get_executor(), [self = shared_from_this(), payload]() {
+        const bool writing = !self->queue_.empty();
+        self->queue_.push_back(OutboundMessage{false, {}, payload});
+        if (!writing) self->doWrite();
+    });
+}
+
+void FrameBroadcaster::Session::doRead() {
+    ws_.async_read(
+        readBuffer_,
+        [self = shared_from_this()](boost::beast::error_code ec, std::size_t bytesTransferred) {
+            self->onRead(ec, bytesTransferred);
         });
+}
+
+void FrameBroadcaster::Session::onRead(boost::beast::error_code ec, std::size_t) {
+    if (ec == boost::beast::websocket::error::closed) return;
+
+    if (ec) {
+        std::cerr << "WebSocket read error: " << ec.message() << "\n";
+        return;
+    }
+
+    if (ws_.got_text()) {
+        const std::string payload = boost::beast::buffers_to_string(readBuffer_.data());
+        owner_.handleTextMessage(payload);
+    }
+
+    readBuffer_.consume(readBuffer_.size());
+    doRead();
+}
+
+void FrameBroadcaster::Session::doWrite() {
+    const OutboundMessage& msg = queue_.front();
+    ws_.binary(msg.binary);
+
+    if (msg.binary) {
+        ws_.async_write(
+            boost::asio::buffer(*msg.binaryPayload),
+            [self = shared_from_this()](boost::beast::error_code ec, std::size_t bytesTransferred) {
+                self->onWrite(ec, bytesTransferred);
+            });
+        return;
+    }
+
+    ws_.async_write(
+        boost::asio::buffer(*msg.textPayload),
+        [self = shared_from_this()](boost::beast::error_code ec, std::size_t bytesTransferred) {
+            self->onWrite(ec, bytesTransferred);
+        });
+}
+
+void FrameBroadcaster::Session::onWrite(boost::beast::error_code ec, std::size_t) {
+    if (ec) {
+        std::cerr << "WebSocket write error: " << ec.message() << "\n";
+        queue_.clear();
+        return;
+    }
+
+    queue_.pop_front();
+    if (!queue_.empty()) doWrite();
 }

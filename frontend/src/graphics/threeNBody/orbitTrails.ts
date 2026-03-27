@@ -42,6 +42,7 @@ export function createOrbitTrailManager(scene: Scene): OrbitTrailManager {
   let writeIndices = new Uint32Array(0);
   let sampleCounts = new Uint32Array(0);
   let lastSeenFrame = -1;
+  let lastLivePositions = new Float32Array(0);
 
   const disposeMesh = () => {
     if (!trailMesh) return;
@@ -93,6 +94,107 @@ export function createOrbitTrailManager(scene: Scene): OrbitTrailManager {
     trailMesh.setEnabled(false);
 
     lastSeenFrame = -1;
+  };
+
+  const recordLivePositions = (positions: Float32Array, count: number) => {
+    const valueCount = count * 3;
+    if (lastLivePositions.length !== valueCount) {
+      lastLivePositions = new Float32Array(valueCount);
+    }
+    lastLivePositions.set(positions.subarray(0, valueCount));
+  };
+
+  const bodyDistanceSq = (
+    positionsA: Float32Array,
+    indexA: number,
+    positionsB: Float32Array,
+    indexB: number
+  ) => {
+    const offsetA = indexA * 3;
+    const offsetB = indexB * 3;
+    const dx = positionsA[offsetA] - positionsB[offsetB];
+    const dy = positionsA[offsetA + 1] - positionsB[offsetB + 1];
+    const dz = positionsA[offsetA + 2] - positionsB[offsetB + 2];
+    return dx * dx + dy * dy + dz * dz;
+  };
+
+  const buildPrunedBodyMapping = (nextCount: number, nextPositions: Float32Array) => {
+    const mapping = new Uint32Array(nextCount);
+    if (lastLivePositions.length !== activeBodyCount * 3 || nextCount >= activeBodyCount) {
+      for (let i = 0; i < nextCount; i++) {
+        mapping[i] = i;
+      }
+      return mapping;
+    }
+
+    let previousCursor = 0;
+    let remainingRemoved = activeBodyCount - nextCount;
+
+    for (let nextIndex = 0; nextIndex < nextCount; nextIndex++) {
+      const remainingNextBodies = nextCount - nextIndex;
+      const maxCandidate = Math.min(
+        activeBodyCount - remainingNextBodies,
+        previousCursor + remainingRemoved
+      );
+
+      let bestCandidate = previousCursor;
+      let bestDistance = bodyDistanceSq(lastLivePositions, previousCursor, nextPositions, nextIndex);
+
+      for (let candidate = previousCursor + 1; candidate <= maxCandidate; candidate++) {
+        const distance = bodyDistanceSq(lastLivePositions, candidate, nextPositions, nextIndex);
+        if (distance < bestDistance) {
+          bestCandidate = candidate;
+          bestDistance = distance;
+        }
+      }
+
+      mapping[nextIndex] = bestCandidate;
+      remainingRemoved -= bestCandidate - previousCursor;
+      previousCursor = bestCandidate + 1;
+    }
+
+    return mapping;
+  };
+
+  const migrateForReducedBodyCount = (nextCount: number, nextPositions: Float32Array) => {
+    const previousActiveBodyCount = activeBodyCount;
+    const previousHistoryPositions = historyPositions;
+    const previousHistorySpeeds = historySpeeds;
+    const previousWriteIndices = writeIndices;
+    const previousSampleCounts = sampleCounts;
+    const previousLastSeenFrame = lastSeenFrame;
+    const bodyMapping = buildPrunedBodyMapping(nextCount, nextPositions);
+
+    allocateForBodies(nextCount);
+
+    const historyPointPositionCount = historyPoints * 3;
+    for (let nextIndex = 0; nextIndex < nextCount; nextIndex++) {
+      const previousIndex = Math.min(bodyMapping[nextIndex], previousActiveBodyCount - 1);
+      const previousHistoryPositionOffset = previousIndex * historyPointPositionCount;
+      const nextHistoryPositionOffset = nextIndex * historyPointPositionCount;
+      historyPositions.set(
+        previousHistoryPositions.subarray(
+          previousHistoryPositionOffset,
+          previousHistoryPositionOffset + historyPointPositionCount
+        ),
+        nextHistoryPositionOffset
+      );
+
+      const previousHistorySpeedOffset = previousIndex * historyPoints;
+      const nextHistorySpeedOffset = nextIndex * historyPoints;
+      historySpeeds.set(
+        previousHistorySpeeds.subarray(
+          previousHistorySpeedOffset,
+          previousHistorySpeedOffset + historyPoints
+        ),
+        nextHistorySpeedOffset
+      );
+
+      writeIndices[nextIndex] = previousWriteIndices[previousIndex];
+      sampleCounts[nextIndex] = previousSampleCounts[previousIndex];
+    }
+
+    lastSeenFrame = previousLastSeenFrame;
   };
 
   const appendSamples = (positions: Float32Array, speeds: Float32Array) => {
@@ -215,7 +317,9 @@ export function createOrbitTrailManager(scene: Scene): OrbitTrailManager {
       return;
     }
 
-    if (count !== activeBodyCount || !trailMesh) {
+    if (count < activeBodyCount && trailMesh) {
+      migrateForReducedBodyCount(count, positions);
+    } else if (count !== activeBodyCount || !trailMesh) {
       allocateForBodies(count);
     }
 
@@ -233,6 +337,7 @@ export function createOrbitTrailManager(scene: Scene): OrbitTrailManager {
       trailMesh.updateVerticesData(VertexBuffer.PositionKind, renderPositions, false, false);
       trailMesh.updateVerticesData(VertexBuffer.ColorKind, renderColors, false, false);
       trailMesh.setEnabled(hasRenderableSegments);
+      recordLivePositions(positions, count);
       return;
     }
 
@@ -242,6 +347,7 @@ export function createOrbitTrailManager(scene: Scene): OrbitTrailManager {
     trailMesh.updateVerticesData(VertexBuffer.PositionKind, renderPositions, false, false);
     trailMesh.updateVerticesData(VertexBuffer.ColorKind, renderColors, false, false);
     trailMesh.setEnabled(hasRenderableSegments);
+    recordLivePositions(positions, count);
   };
 
   const clear = () => {

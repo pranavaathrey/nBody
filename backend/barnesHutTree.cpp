@@ -1,7 +1,5 @@
 #include "nBodySim.hpp"
 
-// TODO: deal with distant outliers slowing the simulation
-
 namespace {
 inline bool isLeaf(const OctreeNode& node) {
     for (int i = 0; i < 8; ++i) 
@@ -131,10 +129,10 @@ const vector<OctreeNode>& BarnesHutTree::getNodes() const {
 
 void BarnesHutTree::build(const ParticleSystem& system) {
     const size_t n = system.size();
+    nodes.clear();
     if (n == 0) return;
 
     // reserve memory upfront
-    nodes.clear();
     nodes.reserve(n * 2); 
 
     // find axis-aligned bounds enclosing all particles

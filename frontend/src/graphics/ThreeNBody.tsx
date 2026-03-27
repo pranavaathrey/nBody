@@ -27,7 +27,13 @@ type ThreeNBodyProps = {
   virtualMoveY?: number;
 };
 
-export function ThreeNBody({ virtualMoveX = 0, virtualMoveY = 0 }: ThreeNBodyProps) {
+const MIN_BODY_INTERPOLATION_MS = 16;
+const MAX_BODY_INTERPOLATION_MS = 400;
+
+export const ThreeNBody = React.memo(function ThreeNBody({
+  virtualMoveX = 0,
+  virtualMoveY = 0
+}: ThreeNBodyProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const virtualMoveRef = useRef({ x: virtualMoveX, y: virtualMoveY });
 
@@ -79,12 +85,19 @@ export function ThreeNBody({ virtualMoveX = 0, virtualMoveY = 0 }: ThreeNBodyPro
     let lastFrame = -1;
     let lastBodyCount = 0;
     let lastTime = performance.now();
+    let displayPositions = new Float32Array(0);
+    let blendStartPositions = new Float32Array(0);
+    let blendTargetPositions = new Float32Array(0);
+    let blendStartTime = 0;
+    let blendDurationMs = 0;
+    let blendActive = false;
     let boundsCenter = new Vector3(0, 0, 0);
     let boundsRadius = 1;
     let needsFit = true;
     let speedScratch = new Float32Array(0);
     let accelerationVectorScratch = new Float32Array(0);
     let accelerationMagnitudeScratch = new Float32Array(0);
+    let percentileScratch = new Float32Array(0);
     let previousVelocitySnapshot = new Float32Array(0);
     let previousFrameSampleTime = 0;
     let previousVelocityVectorsVisible = false;
@@ -137,10 +150,68 @@ export function ThreeNBody({ virtualMoveX = 0, virtualMoveY = 0 }: ThreeNBodyPro
 
     window.addEventListener('resize', onResize);
 
+    const ensureDisplayBuffers = (floatCount: number) => {
+      if (displayPositions.length !== floatCount) {
+        displayPositions = new Float32Array(floatCount);
+        blendStartPositions = new Float32Array(floatCount);
+        blendTargetPositions = new Float32Array(floatCount);
+        blendActive = false;
+      }
+    };
+
+    const snapDisplayPositions = (positions: Float32Array) => {
+      ensureDisplayBuffers(positions.length);
+      displayPositions.set(positions);
+      blendStartPositions.set(positions);
+      blendTargetPositions.set(positions);
+      blendStartTime = 0;
+      blendDurationMs = 0;
+      blendActive = false;
+    };
+
+    const beginDisplayInterpolation = (
+      positions: Float32Array,
+      durationMs: number,
+      nowMs: number
+    ) => {
+      ensureDisplayBuffers(positions.length);
+      blendStartPositions.set(displayPositions);
+      blendTargetPositions.set(positions);
+      blendStartTime = nowMs;
+      blendDurationMs = Math.min(
+        MAX_BODY_INTERPOLATION_MS,
+        Math.max(MIN_BODY_INTERPOLATION_MS, durationMs)
+      );
+      blendActive = true;
+    };
+
+    const updateDisplayPositions = (nowMs: number) => {
+      if (displayPositions.length === 0 || !blendActive || blendDurationMs <= 0) {
+        return false;
+      }
+
+      const rawProgress = Math.min(1, Math.max(0, (nowMs - blendStartTime) / blendDurationMs));
+      const easedProgress = rawProgress * rawProgress * (3 - 2 * rawProgress);
+      const inverseProgress = 1 - easedProgress;
+
+      for (let i = 0; i < displayPositions.length; i++) {
+        displayPositions[i] =
+          blendStartPositions[i] * inverseProgress + blendTargetPositions[i] * easedProgress;
+      }
+
+      if (rawProgress >= 1) {
+        displayPositions.set(blendTargetPositions);
+        blendActive = false;
+      }
+
+      return true;
+    };
+
     const renderLoop = () => {
       const now = performance.now();
       const dt = (now - lastTime) / 1000;
       lastTime = now;
+      let frameChanged = false;
 
       const state = useFrameStore.getState();
       const {
@@ -156,13 +227,34 @@ export function ThreeNBody({ virtualMoveX = 0, virtualMoveY = 0 }: ThreeNBodyPro
       } = state;
 
       if (positions && velocities && frame !== lastFrame) {
-        lastFrame = frame;
-        const bodyCountChanged = bodyCount !== lastBodyCount;
+        frameChanged = true;
+        const isResetOrRewind = frame <= lastFrame;
+        const frameIntervalMs =
+          previousFrameSampleTime > 0 && lastFrameTime > previousFrameSampleTime
+            ? lastFrameTime - previousFrameSampleTime
+            : 1000 / 60;
+        const shouldSnapDisplay =
+          isResetOrRewind
+          || displayPositions.length !== positions.length
+          || lastBodyCount !== bodyCount
+          || lastFrame < 0;
 
-        if (bodyCountChanged) {
-          needsFit = true;
-          lastBodyCount = bodyCount;
+        if (shouldSnapDisplay) {
+          snapDisplayPositions(positions);
+        } else {
+          beginDisplayInterpolation(positions, frameIntervalMs, now);
         }
+
+        if (frame <= lastFrame) {
+          previousVelocitySnapshot = new Float32Array(0);
+          previousFrameSampleTime = 0;
+        }
+
+        lastFrame = frame;
+        if (lastBodyCount === 0 && bodyCount > 0) {
+          needsFit = true;
+        }
+        lastBodyCount = bodyCount;
 
         boundsRadius = computeBounds(positions, bodyCount, boundsCenter);
         if (speedScratch.length !== bodyCount) {
@@ -174,6 +266,9 @@ export function ThreeNBody({ virtualMoveX = 0, virtualMoveY = 0 }: ThreeNBodyPro
         if (accelerationMagnitudeScratch.length !== bodyCount) {
           accelerationMagnitudeScratch = new Float32Array(bodyCount);
         }
+        if (percentileScratch.length !== bodyCount) {
+          percentileScratch = new Float32Array(bodyCount);
+        }
 
         for (let i = 0; i < bodyCount; i++) {
           const base = i * 3;
@@ -183,7 +278,13 @@ export function ThreeNBody({ virtualMoveX = 0, virtualMoveY = 0 }: ThreeNBodyPro
           speedScratch[i] = Math.sqrt(vx * vx + vy * vy + vz * vz);
         }
 
-        const [speedMin, speedMax] = percentileRange(speedScratch, bodyCount, 0.05, 0.95);
+        const [speedMin, speedMax] = percentileRange(
+          speedScratch,
+          bodyCount,
+          0.05,
+          0.95,
+          percentileScratch
+        );
         const speedSpan = Math.max(speedMax - speedMin, 1e-6);
 
         const hasPrevious =
@@ -209,20 +310,17 @@ export function ThreeNBody({ virtualMoveX = 0, virtualMoveY = 0 }: ThreeNBodyPro
           accelerationMagnitudeScratch.fill(0);
         }
 
-        const [accMin, accMax] = percentileRange(accelerationMagnitudeScratch, bodyCount, 0.05, 0.95);
+        const [accMin, accMax] = percentileRange(
+          accelerationMagnitudeScratch,
+          bodyCount,
+          0.05,
+          0.95,
+          percentileScratch
+        );
         const accSpan = Math.max(accMax - accMin, 1e-6);
 
         bodyRadius = BODY_SPHERE_RADIUS;
         bodyInstances.setBodyRadius(bodyRadius);
-        bodyInstances.update(
-          positions,
-          speedScratch,
-          bodyCount,
-          speedMin,
-          speedSpan,
-          camera.position,
-          BILLBOARD_SWITCH_DISTANCE * BILLBOARD_SWITCH_DISTANCE
-        );
         if (showOrbitTrails) {
           orbitTrails.update(frame, positions, speedScratch, bodyCount, speedMin, speedSpan);
         }
@@ -263,6 +361,8 @@ export function ThreeNBody({ virtualMoveX = 0, virtualMoveY = 0 }: ThreeNBodyPro
           needsFit = false;
         }
       }
+
+      const displayPositionsChanged = updateDisplayPositions(now);
 
       if (showVelocityVectors !== previousVelocityVectorsVisible) {
         if (showVelocityVectors) {
@@ -326,15 +426,15 @@ export function ThreeNBody({ virtualMoveX = 0, virtualMoveY = 0 }: ThreeNBodyPro
         worldGrid.update(camera.position);
       }
 
-      // Refresh body classification only when camera moved and we have cached frame data.
-      if (latestPositions && speedScratch.length === lastBodyCount && lastBodyCount > 0) {
+      // Refresh rendered positions when interpolating, after a new frame, or when camera distance bands change.
+      if (displayPositions.length > 0 && speedScratch.length === lastBodyCount && lastBodyCount > 0) {
         const camDx = camera.position.x - lastBodyUpdateCameraPos.x;
         const camDy = camera.position.y - lastBodyUpdateCameraPos.y;
         const camDz = camera.position.z - lastBodyUpdateCameraPos.z;
         const cameraMovedSq = camDx * camDx + camDy * camDy + camDz * camDz;
-        if (cameraMovedSq > 1e-6) {
+        if (frameChanged || displayPositionsChanged || cameraMovedSq > 1e-6) {
           bodyInstances.update(
-            latestPositions,
+            displayPositions,
             speedScratch,
             lastBodyCount,
             latestSpeedMin,
@@ -377,4 +477,4 @@ export function ThreeNBody({ virtualMoveX = 0, virtualMoveY = 0 }: ThreeNBodyPro
   }, []);
 
   return <div ref={hostRef} className="canvas-host" />;
-}
+});

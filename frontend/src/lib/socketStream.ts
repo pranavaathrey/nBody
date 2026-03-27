@@ -1,34 +1,54 @@
 import type { FramePayload } from '../state/useFrameStore';
 import { decodeFrame } from './frameDecode';
+import { parseSimControlMessage, type SimControlSnapshot } from './simControl';
 
 export type StatusHandler = (status: 'connecting' | 'connected' | 'disconnected' | 'error') => void;
 export type FrameHandler = (frame: FramePayload) => void;
+export type SimControlHandler = (snapshot: SimControlSnapshot) => void;
 
 export type SocketControls = {
   close: () => void;
+  sendText: (message: string) => boolean;
 };
+
+const EMPTY_UINT8_ARRAY = new Uint8Array(0);
 
 export function startFrameWebSocket(
   url: string,
   onFrame: FrameHandler,
   onStatus?: StatusHandler,
+  onSimControl?: SimControlHandler,
   retryDelayMs = 250
 ): SocketControls {
   let ws: WebSocket | null = null;
-  let carry = new Uint8Array(0);
+  let carry = EMPTY_UINT8_ARRAY;
   let stop = false;
   let retryTimer: number | null = null;
   let debugLogged = 0;
 
   const resetCarry = () => {
-    carry = new Uint8Array(0);
+    carry = EMPTY_UINT8_ARRAY;
+  };
+
+  const setCarryFromOffset = (source: Uint8Array, offset: number) => {
+    const remaining = source.length - offset;
+    if (remaining <= 0) {
+      carry = EMPTY_UINT8_ARRAY;
+      return;
+    }
+
+    carry = new Uint8Array(remaining);
+    carry.set(source.subarray(offset));
   };
 
   const parseChunk = (chunk: ArrayBuffer) => {
     const incoming = new Uint8Array(chunk);
-    const merged = new Uint8Array(carry.length + incoming.length);
-    merged.set(carry);
-    merged.set(incoming, carry.length);
+    let merged = incoming;
+    if (carry.length > 0) {
+      merged = new Uint8Array(carry.length + incoming.length);
+      merged.set(carry);
+      merged.set(incoming, carry.length);
+    }
 
     const view = new DataView(merged.buffer, merged.byteOffset, merged.byteLength);
     let offset = 0;
@@ -67,7 +87,7 @@ export function startFrameWebSocket(
       offset += 4 + frameLength;
     }
 
-    carry = merged.subarray(offset);
+    setCarryFromOffset(merged, offset);
   };
 
   const cleanupRetry = () => {
@@ -99,9 +119,14 @@ export function startFrameWebSocket(
       if (!stop) retryTimer = window.setTimeout(connect, retryDelayMs);
     };
 
-    ws.onmessage = async (ev: MessageEvent<ArrayBuffer | Blob>) => {
+    ws.onmessage = async (ev: MessageEvent<ArrayBuffer | Blob | string>) => {
       const data = ev.data;
-      if (data instanceof ArrayBuffer) {
+      if (typeof data === 'string') {
+        const snapshot = parseSimControlMessage(data);
+        if (snapshot) {
+          onSimControl?.(snapshot);
+        }
+      } else if (data instanceof ArrayBuffer) {
         parseChunk(data);
       } else if (data instanceof Blob) {
         parseChunk(await data.arrayBuffer());
@@ -116,6 +141,19 @@ export function startFrameWebSocket(
       stop = true;
       cleanupRetry();
       ws?.close();
+    },
+    sendText: (message: string) => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        return false;
+      }
+
+      try {
+        ws.send(message);
+        return true;
+      } catch (err) {
+        console.error('Failed to send WebSocket message', err);
+        return false;
+      }
     }
   };
 }

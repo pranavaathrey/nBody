@@ -32,6 +32,7 @@ export function createVectorOverlayManager(scene: Scene): VectorOverlayManager {
   const tmpQuat = new Quaternion();
   const tmpVec = new Vector3();
   const tmpMid = new Vector3();
+  const tmpOffset = new Vector3();
   const tmpScale = new Vector3(1, 1, 1);
   const tmpColor = new Color3();
 
@@ -133,7 +134,8 @@ export function createVectorOverlayManager(scene: Scene): VectorOverlayManager {
         tmpVec.copyFrom(upAxis);
       }
 
-      tmpMid.set(px, py, pz).addInPlace(tmpVec.scale(length * 0.5));
+      tmpOffset.copyFrom(tmpVec).scaleInPlace(length * 0.5);
+      tmpMid.set(px, py, pz).addInPlace(tmpOffset);
       Quaternion.FromUnitVectorsToRef(upAxis, tmpVec, tmpQuat);
       tmpScale.set(shaftRadius, length, shaftRadius);
       Matrix.ComposeToRef(tmpScale, tmpQuat, tmpMid, tmpMatrix);

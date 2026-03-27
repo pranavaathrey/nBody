@@ -95,7 +95,12 @@ export function createCameraRig(options: CameraRigOptions): CameraRig {
   const rightDir = new Vector3();
   const upDir = new Vector3();
   const moveDelta = new Vector3();
+  const tmpOffset = new Vector3();
+  const tmpScaled = new Vector3();
   const rotMat = Matrix.Identity();
+  const worldForward = new Vector3(0, 0, 1);
+  const worldRight = new Vector3(1, 0, 0);
+  const worldUp = new Vector3(0, 1, 0);
 
   const normalizeAngleDelta = (delta: number) => {
     if (delta > Math.PI) {
@@ -110,11 +115,11 @@ export function createCameraRig(options: CameraRigOptions): CameraRig {
   const updateOrientationVectors = () => {
     orientation.normalize();
     orientation.toRotationMatrix(rotMat);
-    Vector3.TransformNormalToRef(Vector3.Forward(), rotMat, forwardDir);
+    Vector3.TransformNormalToRef(worldForward, rotMat, forwardDir);
     forwardDir.normalize();
-    Vector3.TransformNormalToRef(Vector3.Right(), rotMat, rightDir);
+    Vector3.TransformNormalToRef(worldRight, rotMat, rightDir);
     rightDir.normalize();
-    Vector3.TransformNormalToRef(Vector3.Up(), rotMat, upDir);
+    Vector3.TransformNormalToRef(worldUp, rotMat, upDir);
     upDir.normalize();
   };
 
@@ -136,23 +141,25 @@ export function createCameraRig(options: CameraRigOptions): CameraRig {
     const clamped = Math.min(Math.max(fitDistance, minDistance), maxDistance);
 
     orientation = Quaternion.FromEulerAngles(0, Math.PI, 0);
-    camPos = new Vector3(boundsCenter.x, boundsCenter.y, boundsCenter.z + clamped);
+    camPos.set(boundsCenter.x, boundsCenter.y, boundsCenter.z + clamped);
     applyCameraTransform();
   };
 
   const clampDistanceFromBoundsCenter = () => {
     const boundsCenter = getBoundsCenter();
-    const offset = camPos.subtract(boundsCenter);
-    const distance = offset.length();
+    tmpOffset.copyFrom(camPos).subtractInPlace(boundsCenter);
+    const distance = tmpOffset.length();
     const clampedDistance = Math.max(minDistance, Math.min(maxDistance, distance));
 
     if (!Number.isFinite(distance) || distance < 1e-6) {
-      camPos = boundsCenter.subtract(forwardDir.scale(clampedDistance));
+      tmpScaled.copyFrom(forwardDir).scaleInPlace(clampedDistance);
+      camPos.copyFrom(boundsCenter).subtractInPlace(tmpScaled);
       return;
     }
 
     if (Math.abs(clampedDistance - distance) > 1e-6) {
-      camPos = boundsCenter.add(offset.scale(clampedDistance / distance));
+      tmpScaled.copyFrom(tmpOffset).scaleInPlace(clampedDistance / distance);
+      camPos.copyFrom(boundsCenter).addInPlace(tmpScaled);
     }
   };
 
@@ -171,8 +178,10 @@ export function createCameraRig(options: CameraRigOptions): CameraRig {
   const applyTouchPan = (dx: number, dy: number) => {
     const panSensitivity = 0.4;
     updateOrientationVectors();
-    camPos.addInPlace(rightDir.scale(-dx * panSensitivity));
-    camPos.addInPlace(upDir.scale(dy * panSensitivity));
+    tmpScaled.copyFrom(rightDir).scaleInPlace(-dx * panSensitivity);
+    camPos.addInPlace(tmpScaled);
+    tmpScaled.copyFrom(upDir).scaleInPlace(dy * panSensitivity);
+    camPos.addInPlace(tmpScaled);
   };
 
   const applyTouchRoll = (angleDelta: number) => {
@@ -186,7 +195,8 @@ export function createCameraRig(options: CameraRigOptions): CameraRig {
     updateOrientationVectors();
     const distanceToCenter = Vector3.Distance(camPos, getBoundsCenter());
     const zoomSensitivity = Math.max(distanceToCenter * 0.01, minDistance * 0.5, 0.02);
-    camPos.addInPlace(forwardDir.scale(distanceDelta * zoomSensitivity));
+    tmpScaled.copyFrom(forwardDir).scaleInPlace(distanceDelta * zoomSensitivity);
+    camPos.addInPlace(tmpScaled);
     clampDistanceFromBoundsCenter();
   };
 
@@ -300,8 +310,10 @@ export function createCameraRig(options: CameraRigOptions): CameraRig {
     } else if (dragButton === 2) {
       updateOrientationVectors();
       // Inverted pan: drag right -> pan left, drag up -> pan down.
-      camPos.addInPlace(rightDir.scale(-dx * panSensitivity));
-      camPos.addInPlace(upDir.scale(dy * panSensitivity));
+      tmpScaled.copyFrom(rightDir).scaleInPlace(-dx * panSensitivity);
+      camPos.addInPlace(tmpScaled);
+      tmpScaled.copyFrom(upDir).scaleInPlace(dy * panSensitivity);
+      camPos.addInPlace(tmpScaled);
     }
 
     lastPointer.x = ev.clientX;
@@ -385,10 +397,12 @@ export function createCameraRig(options: CameraRigOptions): CameraRig {
     if (keys.KeyD) moveDelta.addInPlace(rightDir);
     if (keys.KeyA) moveDelta.subtractInPlace(rightDir);
     if (Math.abs(virtualMove.y) > 0.05) {
-      moveDelta.addInPlace(forwardDir.scale(-virtualMove.y));
+      tmpScaled.copyFrom(forwardDir).scaleInPlace(-virtualMove.y);
+      moveDelta.addInPlace(tmpScaled);
     }
     if (Math.abs(virtualMove.x) > 0.05) {
-      moveDelta.addInPlace(rightDir.scale(virtualMove.x));
+      tmpScaled.copyFrom(rightDir).scaleInPlace(virtualMove.x);
+      moveDelta.addInPlace(tmpScaled);
     }
 
     if (moveDelta.lengthSquared() > 0) {

@@ -52,19 +52,68 @@ export function percentileRange(
   values: Float32Array,
   count: number,
   lowPercent: number,
-  highPercent: number
+  highPercent: number,
+  scratch?: Float32Array
 ): [number, number] {
   if (count <= 0) return [0, 1];
 
-  const sorted = values.slice(0, count);
-  sorted.sort();
+  const sorted = scratch && scratch.length >= count ? scratch : new Float32Array(count);
+  sorted.set(values.subarray(0, count));
 
   const lowIndex = Math.floor((count - 1) * lowPercent);
   const highIndex = Math.floor((count - 1) * highPercent);
-  const low = sorted[lowIndex];
-  const high = sorted[highIndex];
+  const low = quickSelect(sorted, lowIndex, count);
+  const high = highIndex === lowIndex ? low : quickSelect(sorted, highIndex, count);
 
   if (!Number.isFinite(low) || !Number.isFinite(high)) return [0, 1];
   if (high <= low) return [low, low + 1];
   return [low, high];
+}
+
+function quickSelect(values: Float32Array, targetIndex: number, count: number): number {
+  let left = 0;
+  let right = count - 1;
+
+  while (left < right) {
+    let pivotIndex = (left + right) >> 1;
+    pivotIndex = partition(values, left, right, pivotIndex);
+
+    if (targetIndex === pivotIndex) {
+      return values[pivotIndex];
+    }
+
+    if (targetIndex < pivotIndex) {
+      right = pivotIndex - 1;
+    } else {
+      left = pivotIndex + 1;
+    }
+  }
+
+  return values[left];
+}
+
+function partition(values: Float32Array, left: number, right: number, pivotIndex: number): number {
+  const pivotValue = values[pivotIndex];
+  swap(values, pivotIndex, right);
+
+  let storeIndex = left;
+  for (let i = left; i < right; i += 1) {
+    if (values[i] < pivotValue) {
+      swap(values, storeIndex, i);
+      storeIndex += 1;
+    }
+  }
+
+  swap(values, right, storeIndex);
+  return storeIndex;
+}
+
+function swap(values: Float32Array, a: number, b: number): void {
+  if (a === b) {
+    return;
+  }
+
+  const temp = values[a];
+  values[a] = values[b];
+  values[b] = temp;
 }

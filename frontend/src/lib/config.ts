@@ -24,7 +24,7 @@ export const ORBIT_TRAIL_TAIL_ALPHA = 0;
 
 // World-space XY grid controls.
 export const WORLD_GRID_ENABLED = true;
-export const WORLD_GRID_OPACITY = 0.05;
+export const WORLD_GRID_OPACITY = 0.003;
 
 export const WORLD_GRID_MINOR_SPACING = 25;
 export const WORLD_GRID_MAJOR_SPACING = 250;

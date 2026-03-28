@@ -427,7 +427,7 @@ int main() {
     // ------------------INITIALIZE SYSTEM------------------//
     
     const size_t NUM_PARTICLES = 10000; // # of particles in system
-    const string AGAMA_SNAPSHOT_PATH = "scenarios/initial_conditions_agama.bin";
+    const string AGAMA_SNAPSHOT_PATH = "scenarios/galaxy.bin";
     const size_t MAX_FPS = 100; // frame cap for output/write loop (set 0 to disable)
     ParticleSystem system;
     

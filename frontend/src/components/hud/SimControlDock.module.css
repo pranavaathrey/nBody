@@ -1,0 +1,267 @@
+.simControlDock {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  margin: 0 2px 0 0;
+  width: auto;
+  z-index: 2;
+}
+
+.simControlFloatingGroup {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.simControlFab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: rgba(20, 22, 32, 0.7);
+  backdrop-filter: blur(6px);
+  color: #d7defd;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, transform 120ms ease;
+}
+
+.simControlFab:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: #f4c069;
+}
+
+.simControlFab.isPaused {
+  background: linear-gradient(145deg, #f4c069, #d9ab5f);
+  border-color: rgba(244, 192, 105, 0.9);
+  color: #17131c;
+}
+
+.simControlFab.isPaused:hover {
+  background: linear-gradient(145deg, #f6c97c, #ddb56a);
+  border-color: rgba(244, 192, 105, 1);
+  color: #17131c;
+}
+
+.simControlFab:active {
+  transform: translateY(1px);
+}
+
+.simControlFab:disabled {
+  opacity: 0.28;
+  cursor: not-allowed;
+}
+
+.simControlFab:disabled:hover {
+  background: rgba(20, 22, 32, 0.7);
+  border-color: rgba(255, 255, 255, 0.12);
+  color: #d7defd;
+}
+
+.simControlFab:focus-visible {
+  outline: 2px solid rgba(244, 192, 105, 0.28);
+  outline-offset: 2px;
+}
+
+.simControlFab svg {
+  width: 18px;
+  height: 18px;
+}
+
+.simControlSpeedWrap {
+  position: relative;
+}
+
+.simControlSpeedPopover {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  width: min(320px, calc(100vw - 32px));
+  padding: 12px 14px;
+  background: rgba(20, 22, 32, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.38);
+  transform-origin: top right;
+  opacity: 0;
+  transform: translateY(-4px) scale(0.98);
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 180ms ease,
+    transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    visibility 0s linear 180ms;
+}
+
+.simControlSpeedPopover[data-open='true'] {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    opacity 180ms ease,
+    transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    visibility 0s linear 0s;
+}
+
+.simControlSpeedPopover::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  right: 10px;
+  width: 10px;
+  height: 10px;
+  background: rgba(20, 22, 32, 0.88);
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  transform: rotate(45deg);
+}
+
+.hudSlider {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+  width: 100%;
+}
+
+.hudSlider input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 14px;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.hudSlider input[type='range']::-webkit-slider-runnable-track {
+  height: 8px;
+  background: linear-gradient(
+    to right,
+    #d9ab5f 0 var(--percent, 0%),
+    rgba(20, 22, 32, 0.6) var(--percent, 0%) 100%
+  );
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.hudSlider input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -3px;
+  border-radius: 50%;
+  background: #f4c069;
+  border: none;
+}
+
+.hudSlider input[type='range']::-moz-range-track {
+  height: 8px;
+  background: rgba(20, 22, 32, 0.6);
+  border: none;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.hudSlider input[type='range']::-moz-range-progress {
+  background: #d9ab5f;
+  height: 8px;
+  border-radius: 999px;
+}
+
+.hudSlider input[type='range']::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #f4c069;
+  border: none;
+}
+
+.simControlSpeedSlider {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 0;
+}
+
+.simControlSpeedSlider > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #cbd5ff;
+  font-size: 13px;
+}
+
+.simControlSpeedScale {
+  display: flex;
+  justify-content: space-between;
+  color: #9ea6c8;
+  font-size: 11px;
+  margin-top: -2px;
+}
+
+.simControlSpeedPopover input[type='range'] {
+  cursor: pointer;
+}
+
+@media (pointer: coarse) and (max-width: 900px) {
+  .simControlFab:active {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.2);
+    color: #f4c069;
+    transform: none;
+  }
+
+  .simControlFab.isPaused:active {
+    background: linear-gradient(145deg, #f6c97c, #ddb56a);
+    border-color: rgba(244, 192, 105, 1);
+    color: #17131c;
+  }
+
+  .simControlDock {
+    top: auto;
+    right: auto;
+    left: calc(env(safe-area-inset-left, 0px) + 12px);
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 12px);
+    width: auto;
+    z-index: 1200;
+  }
+
+  .simControlSpeedPopover {
+    top: auto;
+    right: auto;
+    left: -85px;
+    bottom: calc(100% + 10px);
+    width: min(225px, calc(100vw - 24px));
+    padding: 9px 10px;
+    border-radius: 10px;
+    z-index: 1300;
+  }
+
+  .simControlSpeedPopover::before {
+    top: auto;
+    right: auto;
+    left: 95px;
+    bottom: -6px;
+    border-left: none;
+    border-top: none;
+    border-right: 1px solid rgba(255, 255, 255, 0.12);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  }
+
+  .simControlSpeedSlider > span {
+    font-size: 11px;
+  }
+
+  .simControlSpeedScale {
+    font-size: 9px;
+  }
+}

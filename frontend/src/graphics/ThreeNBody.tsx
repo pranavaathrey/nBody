@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import {
   Color4,
+  DefaultRenderingPipeline,
   DirectionalLight,
   Engine,
   HemisphericLight,
@@ -60,7 +61,7 @@ export const ThreeNBody = React.memo(function ThreeNBody({
     canvas.addEventListener('contextmenu', preventContextMenu);
 
     const scene = new Scene(engine);
-    scene.clearColor = new Color4(5 / 255, 6 / 255, 10 / 255, 1);
+    scene.clearColor = new Color4(0, 0, 0, 1);
 
     const camera = new UniversalCamera('camera', new Vector3(0, 0, 3), scene);
     camera.fov = Math.PI / 2.5;
@@ -68,6 +69,20 @@ export const ThreeNBody = React.memo(function ThreeNBody({
     camera.maxZ = 10000;
     camera.inputs.clear();
     camera.upVector = Vector3.Up();
+
+    // Dynamic bloom: blur the live scene each frame using a downsampled pass 
+    const renderingPipeline = new DefaultRenderingPipeline(
+      'nBodyRenderingPipeline',
+      true,
+      scene,
+      [camera]
+    );
+    renderingPipeline.bloomEnabled = true;
+    renderingPipeline.bloomThreshold = 0;
+    renderingPipeline.bloomKernel = 220;
+    renderingPipeline.bloomWeight = 0.01;
+    renderingPipeline.bloomScale = 0.5;
+    renderingPipeline.samples = Math.max(1, Math.min(4, engine.getCaps().maxMSAASamples || 1));
 
     const hemi = new HemisphericLight('hemi', new Vector3(0, 1, 0), scene);
     hemi.intensity = 0.35;
@@ -334,22 +349,6 @@ export const ThreeNBody = React.memo(function ThreeNBody({
         latestAccelerationSpan = accSpan;
         lastBodyUpdateCameraPos.copyFrom(camera.position);
 
-        if (showVelocityVectors) {
-          vectorOverlays.update('velocity', positions, velocities, speedScratch, bodyCount, speedMin, speedSpan, vectorScaleRadius);
-        }
-        if (showAccelerationVectors) {
-          vectorOverlays.update(
-            'acceleration',
-            positions,
-            accelerationVectorScratch,
-            accelerationMagnitudeScratch,
-            bodyCount,
-            accMin,
-            accSpan,
-            vectorScaleRadius
-          );
-        }
-
         if (previousVelocitySnapshot.length !== velocities.length) {
           previousVelocitySnapshot = new Float32Array(velocities.length);
         }
@@ -363,13 +362,22 @@ export const ThreeNBody = React.memo(function ThreeNBody({
       }
 
       const displayPositionsChanged = updateDisplayPositions(now);
+      const anchorPositions =
+        displayPositions.length === lastBodyCount * 3
+          ? displayPositions
+          : latestPositions;
 
       if (showVelocityVectors !== previousVelocityVectorsVisible) {
         if (showVelocityVectors) {
-          if (latestPositions && latestVelocities && speedScratch.length === lastBodyCount && lastBodyCount > 0) {
+          if (
+            anchorPositions
+            && latestVelocities
+            && speedScratch.length === lastBodyCount
+            && lastBodyCount > 0
+          ) {
             vectorOverlays.update(
               'velocity',
-              latestPositions,
+              anchorPositions,
               latestVelocities,
               speedScratch,
               lastBodyCount,
@@ -387,14 +395,14 @@ export const ThreeNBody = React.memo(function ThreeNBody({
       if (showAccelerationVectors !== previousAccelerationVectorsVisible) {
         if (showAccelerationVectors) {
           if (
-            latestPositions
+            anchorPositions
             && latestAccelerationVectors
             && latestAccelerationMagnitudes
             && lastBodyCount > 0
           ) {
             vectorOverlays.update(
               'acceleration',
-              latestPositions,
+              anchorPositions,
               latestAccelerationVectors,
               latestAccelerationMagnitudes,
               lastBodyCount,
@@ -420,6 +428,46 @@ export const ThreeNBody = React.memo(function ThreeNBody({
         worldGrid.setVisible(showWorldGrid);
       }
       previousWorldGridVisible = showWorldGrid;
+
+      if (frameChanged || displayPositionsChanged) {
+        if (
+          showVelocityVectors
+          && anchorPositions
+          && latestVelocities
+          && speedScratch.length === lastBodyCount
+          && lastBodyCount > 0
+        ) {
+          vectorOverlays.update(
+            'velocity',
+            anchorPositions,
+            latestVelocities,
+            speedScratch,
+            lastBodyCount,
+            latestSpeedMin,
+            latestSpeedSpan,
+            vectorScaleRadius
+          );
+        }
+
+        if (
+          showAccelerationVectors
+          && anchorPositions
+          && latestAccelerationVectors
+          && latestAccelerationMagnitudes
+          && lastBodyCount > 0
+        ) {
+          vectorOverlays.update(
+            'acceleration',
+            anchorPositions,
+            latestAccelerationVectors,
+            latestAccelerationMagnitudes,
+            lastBodyCount,
+            latestAccelerationMin,
+            latestAccelerationSpan,
+            vectorScaleRadius
+          );
+        }
+      }
 
       cameraRig.update(dt);
       if (showWorldGrid) {
@@ -470,6 +518,7 @@ export const ThreeNBody = React.memo(function ThreeNBody({
       orbitTrails.dispose();
       worldGrid.dispose();
       vectorOverlays.dispose();
+      renderingPipeline.dispose();
       scene.dispose();
       engine.dispose();
       if (host.contains(canvas)) host.removeChild(canvas);

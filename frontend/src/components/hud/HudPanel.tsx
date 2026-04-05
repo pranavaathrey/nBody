@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import { shallow } from 'zustand/shallow';
-import { WS_URL } from '../../lib/config';
 import { useFrameStore } from '../../state/useFrameStore';
 import type { ConnectionStatus } from '../../state/useFrameStore';
 import styles from './HudPanel.module.css';
@@ -9,6 +8,7 @@ import { HudSettings } from './HudSettings';
 type HudPanelProps = {
   scenarioTitle: string;
   status: ConnectionStatus;
+  wsUrl: string;
   controlsDisabled: boolean;
   onSendControlMessage: (message: string) => boolean;
   onBackToLanding: () => void;
@@ -51,6 +51,7 @@ function HudStats() {
 export function HudPanel({
   scenarioTitle,
   status,
+  wsUrl,
   controlsDisabled,
   onSendControlMessage,
   onBackToLanding
@@ -167,7 +168,7 @@ export function HudPanel({
             <div className={styles.hudConnectionLine}>
               <span className={`${styles.dot} 
                                 ${status === 'connected' ? styles.ok : ''}`.trim()} />
-              {status} <div className={styles.wsurl}>· <small>{WS_URL}</small></div>
+              {status} <div className={styles.wsurl}>· <small>{wsUrl}</small></div>
             </div>
             <small>Stats</small>
             <HudStats />

@@ -16,12 +16,15 @@ import { MobileJoystick } from './components/hud/MobileJoystick';
 import { HudPanel } from './components/hud/HudPanel';
 import { SimControlDock } from './components/hud/SimControlDock';
 import { ThreeNBody } from './graphics/ThreeNBody.tsx';
-import { WS_URL } from './lib/config';
 import {
   formatScenarioStartMessage,
   type ScenarioSelection
 } from './lib/scenarioControl';
-import { startFrameWebSocket, type SocketControls } from './lib/socketStream';
+import {
+  startFrameWebSocket,
+  type SocketControls,
+  WS_URL
+} from './lib/socketStream';
 import { useFrameStore } from './state/useFrameStore';
 
 const JOYSTICK_RADIUS_PX = 44;
@@ -295,6 +298,7 @@ function SimulationPage({
       <HudPanel
         scenarioTitle={scenarioTitle}
         status={status}
+        wsUrl={WS_URL}
         controlsDisabled={controlsDisabled}
         onSendControlMessage={sendControlMessage}
         onBackToLanding={handleBackToLandingRequest}

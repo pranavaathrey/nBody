@@ -24,7 +24,7 @@ SECONDARY_GALAXY_PRESET = "grand-design"
 
 # Merger-biased encounter tuning knobs.
 BASE_ENCOUNTER_DIRECTION = np.array([1.35, 0.35, 0.20], dtype=np.float64)
-INITIAL_SEPARATION_MULTIPLIER = 2.3
+INITIAL_SEPARATION_MULTIPLIER = 3.3
 
 PRIMARY_GALAXY_ROTATION_DEG = (18.0, -8.0, 24.0)
 SECONDARY_GALAXY_ROTATION_DEG = (10.0, 4.0, 14.0)
@@ -262,7 +262,7 @@ def parse_args():
     parser.add_argument(
         "--out",
         type=str,
-        default=str(Path(__file__).with_name("galaxy.bin")),
+        default=str(Path(__file__).with_name("galaxyCollision.bin")),
         help="output binary snapshot path",
     )
     return parser.parse_args()

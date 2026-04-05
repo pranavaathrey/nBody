@@ -1,5 +1,5 @@
 import { Color3, Matrix, Mesh, MeshBuilder, PBRMaterial, Quaternion, Scene, Vector3 } from '@babylonjs/core';
-import { turboColor } from './color';
+import { randomIndexedColor, turboColor } from './color';
 import { clamp01 } from './math';
 
 type VectorOverlay = {
@@ -21,10 +21,17 @@ export type VectorOverlayManager = {
     scaleRadius: number
   ) => void;
   clear: (name: string) => void;
+  getMesh: (name: string) => Mesh;
   dispose: () => void;
 };
 
-export function createVectorOverlayManager(scene: Scene): VectorOverlayManager {
+export function createVectorOverlayManager(
+  scene: Scene,
+  renderTheme: 'default' | 'stable-orbits' = 'default',
+  stableColorSeed = 0
+): VectorOverlayManager {
+  const useStableOrbitTheme = renderTheme === 'stable-orbits';
+  const stableVectorColorIntensity = 1.2;
   const overlays = new Map<string, VectorOverlay>();
 
   const upAxis = Vector3.Up();
@@ -61,13 +68,24 @@ export function createVectorOverlayManager(scene: Scene): VectorOverlayManager {
     }
 
     merged.isPickable = false;
+    merged.useVertexColors = true;
+    merged.hasVertexAlpha = true;
     merged.setEnabled(false);
 
     const material = new PBRMaterial(`${name}-vector-mat`, scene);
     material.albedoColor = Color3.White();
-    material.metallic = 0;
-    material.roughness = 0.95;
-    material.emissiveColor = new Color3(0.02, 0.02, 0.02);
+    if (useStableOrbitTheme) {
+      material.unlit = true;
+      material.metallic = 0.0;
+      material.roughness = 1.0;
+      material.emissiveColor = new Color3(0.16, 0.16, 0.16);
+      material.emissiveIntensity = 1.0;
+    } else {
+      material.metallic = 0;
+      material.roughness = 0.95;
+      material.emissiveColor = new Color3(0.02, 0.02, 0.02);
+      material.emissiveIntensity = 1.0;
+    }
 
     merged.material = material;
     merged.thinInstanceEnablePicking = false;
@@ -142,11 +160,19 @@ export function createVectorOverlayManager(scene: Scene): VectorOverlayManager {
       tmpMatrix.copyToArray(overlay.matrixData, i * 16);
 
       const c = i * 4;
-      turboColor(tBase, tmpColor);
-      overlay.colorData[c] = tmpColor.r;
-      overlay.colorData[c + 1] = tmpColor.g;
-      overlay.colorData[c + 2] = tmpColor.b;
-      overlay.colorData[c + 3] = 0.95;
+      if (useStableOrbitTheme) {
+        randomIndexedColor(i, tmpColor, stableColorSeed);
+        overlay.colorData[c] = tmpColor.r * stableVectorColorIntensity;
+        overlay.colorData[c + 1] = tmpColor.g * stableVectorColorIntensity;
+        overlay.colorData[c + 2] = tmpColor.b * stableVectorColorIntensity;
+        overlay.colorData[c + 3] = 1;
+      } else {
+        turboColor(tBase, tmpColor);
+        overlay.colorData[c] = tmpColor.r;
+        overlay.colorData[c + 1] = tmpColor.g;
+        overlay.colorData[c + 2] = tmpColor.b;
+        overlay.colorData[c + 3] = 0.95;
+      }
     }
 
     overlay.mesh.thinInstanceCount = count;
@@ -161,6 +187,8 @@ export function createVectorOverlayManager(scene: Scene): VectorOverlayManager {
     overlay.mesh.setEnabled(false);
   };
 
+  const getMesh = (name: string) => ensureOverlay(name).mesh;
+
   const dispose = () => {
     overlays.forEach((overlay) => {
       overlay.mesh.dispose(false, true);
@@ -172,6 +200,7 @@ export function createVectorOverlayManager(scene: Scene): VectorOverlayManager {
   return {
     update,
     clear,
+    getMesh,
     dispose
   };
 }

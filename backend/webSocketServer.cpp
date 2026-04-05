@@ -5,14 +5,12 @@
 #include <iostream>
 
 FrameBroadcaster::FrameBroadcaster(
-    boost::asio::io_context& ioc,
-    unsigned short port,
-    TextMessageHandler onTextMessage,
-    InitialTextMessageProvider initialTextMessageProvider)
-    : ioc_(ioc),
-      acceptor_(ioc),
-      onTextMessage_(std::move(onTextMessage)),
-      initialTextMessageProvider_(std::move(initialTextMessageProvider)) {
+        boost::asio::io_context& ioc,
+        unsigned short port,
+        TextMessageHandler onTextMessage,
+        InitialTextMessageProvider initialTextMessageProvider
+    ): ioc_(ioc), acceptor_(ioc), onTextMessage_(std::move(onTextMessage)),
+       initialTextMessageProvider_(std::move(initialTextMessageProvider)) {
     boost::beast::error_code ec;
 
     const auto openEndpoint = [&](tcp::endpoint ep) {

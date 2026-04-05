@@ -1,9 +1,7 @@
 export type SimControlSnapshot = {
   paused: boolean;
   dt: number;
-  pruningEnabled: boolean;
   defaultDt: number;
-  defaultPruningEnabled: boolean;
 };
 
 function parseControlFlag(value: string | null): boolean | null {
@@ -38,16 +36,12 @@ export function parseSimControlMessage(message: string): SimControlSnapshot | nu
   const searchParams = new URLSearchParams(message.slice(prefix.length));
   const paused = parseControlFlag(searchParams.get('paused'));
   const dt = parsePositiveNumber(searchParams.get('dt'));
-  const pruningEnabled = parseControlFlag(searchParams.get('pruning'));
   const defaultDt = parsePositiveNumber(searchParams.get('defaultDt'));
-  const defaultPruningEnabled = parseControlFlag(searchParams.get('defaultPruning'));
 
   if (
     paused === null
     || dt === null
-    || pruningEnabled === null
     || defaultDt === null
-    || defaultPruningEnabled === null
   ) {
     return null;
   }
@@ -55,9 +49,7 @@ export function parseSimControlMessage(message: string): SimControlSnapshot | nu
   return {
     paused,
     dt,
-    pruningEnabled,
-    defaultDt,
-    defaultPruningEnabled
+    defaultDt
   };
 }
 

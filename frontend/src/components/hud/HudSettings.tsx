@@ -35,8 +35,7 @@ export function HudSettings({
     invertLook,
     setInvertLook,
     cameraBaseMoveSpeed,
-    setCameraBaseMoveSpeed,
-    simPruningEnabled
+    setCameraBaseMoveSpeed
   } = useFrameStore(
     (state) => ({
       showVelocityVectors: state.showVelocityVectors,
@@ -50,8 +49,7 @@ export function HudSettings({
       invertLook: state.invertLook,
       setInvertLook: state.setInvertLook,
       cameraBaseMoveSpeed: state.cameraBaseMoveSpeed,
-      setCameraBaseMoveSpeed: state.setCameraBaseMoveSpeed,
-      simPruningEnabled: state.simPruningEnabled
+      setCameraBaseMoveSpeed: state.setCameraBaseMoveSpeed
     }),
     shallow
   );
@@ -175,19 +173,6 @@ export function HudSettings({
                   onChange={(ev) => setShowWorldGrid(ev.target.checked)}
                 />
                 World grid
-              </label>
-              <label className={styles.hudToggle}>
-                <input
-                  type="checkbox"
-                  checked={simPruningEnabled}
-                  onChange={(ev) => {
-                    if (controlsDisabled) {
-                      return;
-                    }
-                    onSendControlMessage(`control:set?pruning=${ev.target.checked ? 1 : 0}`);
-                  }}
-                />
-                Enable pruning
               </label>
             </div>
           </div>

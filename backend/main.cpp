@@ -6,9 +6,7 @@
 #include <csignal>
 #include <atomic>
 #include <deque>
-#include <future>
 #include <iomanip>
-#include <limits>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -18,17 +16,10 @@
 #include "generated/frame_sample_generated.h"
 #include "webSocketServer.hpp"
 
-// TODO: take outlier pruning logic out of main and fix orbit trail resetting in frontend
-
 namespace {
-    constexpr int OUTLIER_SCAN_INTERVAL = 75;
-    constexpr bool DEFAULT_OUTLIER_PRUNING_ENABLED = true;
     constexpr bool DEFAULT_SIM_PAUSED = false;
     constexpr float DEFAULT_SIM_DT = 0.016667f;
-    constexpr float OUTLIER_RADIUS_MULTIPLIER = 8.0f;
-    constexpr float OUTLIER_ACCELERATION_RATIO = 1e-4f;
-    constexpr float MIN_OUTLIER_ACCELERATION_SQ = 1e-8f;
-    constexpr float MIN_CORE_RADIUS_SQ = 1.0f;
+    constexpr float GALAXY_COLLISION_DEFAULT_SIM_DT = 0.1666667f;
     constexpr auto PAUSED_POLL_INTERVAL = chrono::milliseconds(10);
 
     atomic<bool> g_running{true};
@@ -39,15 +30,18 @@ namespace {
     struct RuntimeControlState {
         bool paused = DEFAULT_SIM_PAUSED;
         float dt = DEFAULT_SIM_DT;
-        bool pruningEnabled = DEFAULT_OUTLIER_PRUNING_ENABLED;
         float defaultDt = DEFAULT_SIM_DT;
-        bool defaultPruningEnabled = DEFAULT_OUTLIER_PRUNING_ENABLED;
     };
+
+    float scenarioDefaultDt(const ScenarioSelection& selection) {
+        return selection.kind == ScenarioKind::GalaxyCollision
+            ? GALAXY_COLLISION_DEFAULT_SIM_DT
+            : DEFAULT_SIM_DT;
+    }
 
     struct ControlCommand {
         optional<bool> paused;
         optional<float> dt;
-        optional<bool> pruningEnabled;
         bool reset = false;
     };
 
@@ -110,11 +104,6 @@ namespace {
                     if (equals == string::npos || !parsePositiveFloat(value, parsed)) return nullopt;
                     command.dt = parsed;
                     hasRecognizedField = true;
-                } else if (key == "pruning") {
-                    bool parsed = false;
-                    if (equals == string::npos || !parseControlBool(value, parsed)) return nullopt;
-                    command.pruningEnabled = parsed;
-                    hasRecognizedField = true;
                 }
             }
 
@@ -138,10 +127,6 @@ namespace {
                 state.dt = state.defaultDt;
                 changed = true;
             }
-            if (state.pruningEnabled != state.defaultPruningEnabled) {
-                state.pruningEnabled = state.defaultPruningEnabled;
-                changed = true;
-            }
             return changed;
         }
 
@@ -155,11 +140,6 @@ namespace {
             changed = true;
         }
 
-        if (command.pruningEnabled.has_value() && state.pruningEnabled != *command.pruningEnabled) {
-            state.pruningEnabled = *command.pruningEnabled;
-            changed = true;
-        }
-
         return changed;
     }
 
@@ -168,9 +148,7 @@ namespace {
         stream << setprecision(6)
                << "control:state?paused=" << (state.paused ? 1 : 0)
                << "&dt=" << state.dt
-               << "&pruning=" << (state.pruningEnabled ? 1 : 0)
-               << "&defaultDt=" << state.defaultDt
-               << "&defaultPruning=" << (state.defaultPruningEnabled ? 1 : 0);
+             << "&defaultDt=" << state.defaultDt;
         return stream.str();
     }
 
@@ -178,6 +156,7 @@ namespace {
         RuntimeControlState state;
         bool stateChanged = false;
         bool resetRequested = false;
+        optional<ScenarioSelection> scenarioStartSelection;
     };
 
     class SimulationControlBridge {
@@ -194,9 +173,19 @@ namespace {
             return true;
         }
 
+        void enqueueScenarioStart(const ScenarioSelection& selection) {
+            lock_guard<mutex> lock(mutex_);
+            pendingScenarioStarts_.push_back(selection);
+        }
+
         RuntimeControlState snapshot() const {
             lock_guard<mutex> lock(mutex_);
             return state_;
+        }
+
+        void replaceState(const RuntimeControlState& nextState) {
+            lock_guard<mutex> lock(mutex_);
+            state_ = nextState;
         }
 
         ControlDrainResult drainPending() {
@@ -210,6 +199,11 @@ namespace {
                 pendingCommands_.pop_front();
             }
 
+            if (!pendingScenarioStarts_.empty()) {
+                result.scenarioStartSelection = pendingScenarioStarts_.back();
+                pendingScenarioStarts_.clear();
+            }
+
             result.state = state_;
             return result;
         }
@@ -218,156 +212,7 @@ namespace {
         mutable mutex mutex_;
         RuntimeControlState state_;
         deque<ControlCommand> pendingCommands_;
-    };
-
-    struct OutlierSnapshot {
-        vector<float> posX;
-        vector<float> posY;
-        vector<float> posZ;
-        vector<float> accelSq;
-    };
-
-    struct OutlierScanResult {
-        int sourceFrame = -1;
-        float centerX = 0.0f;
-        float centerY = 0.0f;
-        float centerZ = 0.0f;
-        float distanceThresholdSq = numeric_limits<float>::infinity();
-        float accelerationThresholdSq = 0.0f;
-        vector<size_t> candidates;
-    };
-
-    size_t quantileIndex(size_t count, float quantile) {
-        if (count <= 1) return 0;
-
-        const float scaled = quantile * static_cast<float>(count - 1);
-        return static_cast<size_t>(scaled);
-    }
-
-    float nthValue(vector<float> values, size_t nth) {
-        nth = min(nth, values.size() - 1);
-        nth_element(values.begin(), values.begin() + static_cast<ptrdiff_t>(nth), values.end());
-        return values[nth];
-    }
-
-    OutlierSnapshot captureOutlierSnapshot(const ParticleSystem& system) {
-        OutlierSnapshot snapshot;
-        const size_t n = system.size();
-        snapshot.posX.reserve(n);
-        snapshot.posY.reserve(n);
-        snapshot.posZ.reserve(n);
-        snapshot.accelSq.reserve(n);
-
-        for (const BodyBlock& blk : system.blocks)
-            for (size_t lane = 0; lane < blk.count; ++lane) {
-                snapshot.posX.push_back(blk.posX[lane]);
-                snapshot.posY.push_back(blk.posY[lane]);
-                snapshot.posZ.push_back(blk.posZ[lane]);
-
-                const float ax = blk.forceX[lane] * blk.invMass[lane];
-                const float ay = blk.forceY[lane] * blk.invMass[lane];
-                const float az = blk.forceZ[lane] * blk.invMass[lane];
-                snapshot.accelSq.push_back(ax * ax + ay * ay + az * az);
-            }
-
-        return snapshot;
-    }
-
-    OutlierScanResult analyzeOutliers(OutlierSnapshot snapshot, int frame) {
-        OutlierScanResult result;
-        result.sourceFrame = frame;
-
-        const size_t n = snapshot.posX.size();
-        if (n < 64) return result;
-
-        result.centerX = nthValue(snapshot.posX, quantileIndex(n, 0.5f));
-        result.centerY = nthValue(snapshot.posY, quantileIndex(n, 0.5f));
-        result.centerZ = nthValue(snapshot.posZ, quantileIndex(n, 0.5f));
-
-        vector<float> distSq;
-        distSq.reserve(n);
-        for (size_t i = 0; i < n; ++i) {
-            const float dx = snapshot.posX[i] - result.centerX;
-            const float dy = snapshot.posY[i] - result.centerY;
-            const float dz = snapshot.posZ[i] - result.centerZ;
-            distSq.push_back(dx * dx + dy * dy + dz * dz);
-        }
-
-        const float coreRadiusSq = max(nthValue(distSq, quantileIndex(n, 0.9f)), MIN_CORE_RADIUS_SQ);
-        const float typicalAccelerationSq = nthValue(snapshot.accelSq, quantileIndex(n, 0.5f));
-
-        result.distanceThresholdSq =
-            coreRadiusSq * OUTLIER_RADIUS_MULTIPLIER * OUTLIER_RADIUS_MULTIPLIER;
-        result.accelerationThresholdSq =
-            max(typicalAccelerationSq * OUTLIER_ACCELERATION_RATIO, MIN_OUTLIER_ACCELERATION_SQ);
-
-        for (size_t i = 0; i < n; ++i)
-            if (distSq[i] > result.distanceThresholdSq &&
-                snapshot.accelSq[i] <= result.accelerationThresholdSq)
-                result.candidates.push_back(i);
-
-        return result;
-    }
-
-    bool stillMatchesOutlier(const ParticleSystem& system, size_t idx, const OutlierScanResult& scan) {
-        const float dx = system.posXAt(idx) - scan.centerX;
-        const float dy = system.posYAt(idx) - scan.centerY;
-        const float dz = system.posZAt(idx) - scan.centerZ;
-        const float distSq = dx * dx + dy * dy + dz * dz;
-
-        const float ax = system.forceXAt(idx) * system.invMassAt(idx);
-        const float ay = system.forceYAt(idx) * system.invMassAt(idx);
-        const float az = system.forceZAt(idx) * system.invMassAt(idx);
-        const float accelSq = ax * ax + ay * ay + az * az;
-
-        return distSq > scan.distanceThresholdSq &&
-               accelSq <= scan.accelerationThresholdSq;
-    }
-
-    class OutlierPruner {
-        public:
-        void schedule(const ParticleSystem& system, int frame) {
-            if (pendingScan_.valid() || system.size() == 0) return;
-
-            OutlierSnapshot snapshot = captureOutlierSnapshot(system);
-            pendingGeneration_ = generation_;
-            pendingScan_ = async(
-                launch::async,
-                [snapshot = move(snapshot), frame]() mutable {
-                    return analyzeOutliers(move(snapshot), frame);
-                });
-        }
-
-        void invalidatePending() {
-            ++generation_;
-        }
-
-        void applyReady(ParticleSystem& system, bool pruningEnabled) {
-            if (!pendingScan_.valid()) return;
-            if (pendingScan_.wait_for(chrono::milliseconds(0)) != future_status::ready) return;
-
-            OutlierScanResult scan = pendingScan_.get();
-            const uint64_t scanGeneration = pendingGeneration_;
-            pendingGeneration_ = 0;
-
-            if (!pruningEnabled || scanGeneration != generation_) return;
-            if (scan.candidates.empty() || system.size() == 0) return;
-
-            vector<size_t> toRemove;
-            toRemove.reserve(scan.candidates.size());
-
-            for (size_t idx : scan.candidates)
-                if (idx < system.size() && stillMatchesOutlier(system, idx, scan))
-                    toRemove.push_back(idx);
-
-            if (system.removeIndices(move(toRemove)) > 0)
-                initializeForces(system);
-        }
-
-        private:
-        future<OutlierScanResult> pendingScan_;
-        uint64_t generation_ = 0;
-        uint64_t pendingGeneration_ = 0;
+        deque<ScenarioSelection> pendingScenarioStarts_;
     };
 
     inline uint32_t toLittleEndian(uint32_t v) {
@@ -425,28 +270,18 @@ int main() {
     signal(SIGTERM, handleSignal);
 
     // ------------------INITIALIZE SYSTEM------------------//
-    
-    const size_t NUM_PARTICLES = 10000; // # of particles in system
-    const string AGAMA_SNAPSHOT_PATH = "scenarios/galaxy.bin";
+
     const size_t MAX_FPS = 100; // frame cap for output/write loop (set 0 to disable)
     ParticleSystem system;
-    
+    ParticleSystem initialSystem;
+    bool hasLoadedScenario = false;
+
     RuntimeControlState runtimeControls;
     SimulationControlBridge controlBridge(runtimeControls);
 
     int currentFrame = 0;
-    OutlierPruner outlierPruner;
-    
-    // Try AGAMA-generated initial conditions first; fallback to procedural disk.
-    if (!loadAgamaSnapshot(system, AGAMA_SNAPSHOT_PATH)) {
-        cout << "AGAMA snapshot not loaded from " << AGAMA_SNAPSHOT_PATH
-             << "; falling back to accretionDisk." << "\n";
-        system.allocate(NUM_PARTICLES);
-        accretionDisk(system, NUM_PARTICLES);
-    }
-    // populate acceleration at t=0 for correct first Verlet step
-    initializeForces(system);
-    const ParticleSystem initialSystem = system;
+
+    cout << "Awaiting scenario:start websocket message from frontend before simulation begins.\n";
 
     // start WebSocket broadcaster on ws://localhost:8080/frames
     boost::asio::io_context ioc;
@@ -454,7 +289,22 @@ int main() {
         ioc,
         8080,
         [&controlBridge](const string& message) {
-            cout << "[control] received: " << message << "\n";
+            cout << "[ws] received: " << message << "\n";
+
+            ScenarioSelection selection;
+            ostringstream scenarioErrors;
+            if (parseScenarioStartMessage(message, selection, &scenarioErrors)) {
+                controlBridge.enqueueScenarioStart(selection);
+                cout << "[scenario] queued scenario:start request\n";
+                return;
+            }
+
+            if (!scenarioErrors.str().empty()) {
+                cout << "[scenario] invalid scenario:start request: "
+                     << scenarioErrors.str();
+                return;
+            }
+
             if (!controlBridge.enqueueMessage(message))
                 cout << "[control] ignored invalid message\n";
         },
@@ -463,8 +313,7 @@ int main() {
         });
     thread wsThread([&ioc]() { ioc.run(); });
 
-    flatbuffers::FlatBufferBuilder frameBuilder(
-                    128 + NUM_PARTICLES * 6 * sizeof(float));
+    flatbuffers::FlatBufferBuilder frameBuilder(1024);
 
     const auto targetFrameDuration =
         (MAX_FPS > 0)
@@ -473,38 +322,60 @@ int main() {
             : chrono::steady_clock::duration::zero();
 
     // ---------------------PHYSICS LOOP---------------------//
-    cout << "Starting physics loop benchmark for "
-              << NUM_PARTICLES << " bodies...\n";
+    cout << "Starting physics loop. Waiting for frontend scenario selection...\n";
 
     chrono::duration<double> totalTime;
     auto startTime = chrono::high_resolution_clock::now();
     chrono::duration<double> activeRunTime{0};
     auto activeSegmentStart = chrono::steady_clock::now();
-    bool activeSegmentOpen = true;
+    bool activeSegmentOpen = false;
 
         // the core execution loop
         while (g_running) {
-            const bool pruningWasEnabled = runtimeControls.pruningEnabled;
             const ControlDrainResult controlUpdate = controlBridge.drainPending();
             runtimeControls = controlUpdate.state;
+            bool shouldBroadcastControlState = controlUpdate.stateChanged;
 
-            if (controlUpdate.resetRequested) {
-                system = initialSystem;
-                currentFrame = 0;
-                outlierPruner = OutlierPruner{};
+            if (controlUpdate.scenarioStartSelection.has_value()) {
+                ParticleSystem loadedSystem;
+                cout << "[scenario] loading requested scenario...\n";
+
+                if (!loadSelectedScenario(loadedSystem, *controlUpdate.scenarioStartSelection, cout)) {
+                    cout << "[scenario] failed to load requested scenario\n";
+                } else if (loadedSystem.size() == 0) {
+                    cout << "[scenario] requested scenario loaded zero bodies\n";
+                } else {
+                    initializeForces(loadedSystem);
+
+                    runtimeControls.defaultDt = scenarioDefaultDt(*controlUpdate.scenarioStartSelection);
+                    runtimeControls.dt = runtimeControls.defaultDt;
+                    runtimeControls.paused = DEFAULT_SIM_PAUSED;
+                    controlBridge.replaceState(runtimeControls);
+                    shouldBroadcastControlState = true;
+
+                    system = loadedSystem;
+                    initialSystem = system;
+                    hasLoadedScenario = true;
+                    currentFrame = 0;
+
+                    cout << "[scenario] loaded successfully with "
+                         << system.size() << " bodies\n";
+                }
             }
 
-            if (pruningWasEnabled && !runtimeControls.pruningEnabled)
-                outlierPruner.invalidatePending();
+            if (controlUpdate.resetRequested && hasLoadedScenario) {
+                system = initialSystem;
+                currentFrame = 0;
+            }
 
-            if (controlUpdate.stateChanged) {
+            if (shouldBroadcastControlState) {
                 const string controlStateMessage = encodeControlStateMessage(runtimeControls);
                 cout << "[control] state: " << controlStateMessage << "\n";
                 broadcaster.broadcastText(controlStateMessage);
             }
 
             const auto loopNow = chrono::steady_clock::now();
-            if (runtimeControls.paused) {
+            if (!hasLoadedScenario || runtimeControls.paused) {
                 if (activeSegmentOpen) {
                     activeRunTime += loopNow - activeSegmentStart;
                     activeSegmentOpen = false;
@@ -521,14 +392,8 @@ int main() {
             auto frameStart = chrono::steady_clock::now();
             auto computeStart = chrono::high_resolution_clock::now();
 
-                outlierPruner.applyReady(system, runtimeControls.pruningEnabled);
-
                 // execute one step of the Velocity Verlet and Barnes-Hut algorithm
                 physicsTick(system, runtimeControls.dt);
-
-                if(runtimeControls.pruningEnabled
-                && (currentFrame % OUTLIER_SCAN_INTERVAL == 0))
-                    outlierPruner.schedule(system, currentFrame);
 
             auto computeEnd = chrono::high_resolution_clock::now();
             chrono::duration<double, milli> frameTime = computeEnd - computeStart;

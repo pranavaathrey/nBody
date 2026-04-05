@@ -1,9 +1,11 @@
 import React, { useEffect, useRef } from 'react';
 import {
+  Constants,
   Color4,
   DefaultRenderingPipeline,
   DirectionalLight,
   Engine,
+  GlowLayer,
   HemisphericLight,
   Scene,
   UniversalCamera,
@@ -16,7 +18,10 @@ import {
   VECTOR_OVERLAY_SCALE_RADIUS
 } from '../lib/config';
 import { useFrameStore } from '../state/useFrameStore';
-import { createBodyInstancesRenderer } from './threeNBody/bodyInstances';
+import {
+  createBodyInstancesRenderer,
+  type BodyRenderTheme
+} from './threeNBody/bodyInstances';
 import { createCameraRig } from './threeNBody/cameraRig';
 import { computeBounds, percentileRange } from './threeNBody/math';
 import { createOrbitTrailManager } from './threeNBody/orbitTrails';
@@ -26,6 +31,7 @@ import { createWorldGridRenderer } from './threeNBody/worldGrid';
 type ThreeNBodyProps = {
   virtualMoveX?: number;
   virtualMoveY?: number;
+  renderTheme?: BodyRenderTheme;
 };
 
 const MIN_BODY_INTERPOLATION_MS = 16;
@@ -33,7 +39,8 @@ const MAX_BODY_INTERPOLATION_MS = 400;
 
 export const ThreeNBody = React.memo(function ThreeNBody({
   virtualMoveX = 0,
-  virtualMoveY = 0
+  virtualMoveY = 0,
+  renderTheme = 'default'
 }: ThreeNBodyProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const virtualMoveRef = useRef({ x: virtualMoveX, y: virtualMoveY });
@@ -44,6 +51,9 @@ export const ThreeNBody = React.memo(function ThreeNBody({
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    const useStableOrbitTheme = renderTheme === 'stable-orbits';
+    const maxRenderPixelRatio = useStableOrbitTheme ? 2 : 1.5;
+    const stableColorSeed = Math.floor(Math.random() * 1_000_000_000);
 
     const canvas = document.createElement('canvas');
     canvas.style.width = '100%';
@@ -56,7 +66,7 @@ export const ThreeNBody = React.memo(function ThreeNBody({
       preserveDrawingBuffer: false,
       powerPreference: 'high-performance'
     });
-    engine.setHardwareScalingLevel(1 / Math.min(window.devicePixelRatio || 1, 1.5));
+    engine.setHardwareScalingLevel(1 / Math.min(window.devicePixelRatio || 1, maxRenderPixelRatio));
     const preventContextMenu = (ev: Event) => ev.preventDefault();
     canvas.addEventListener('contextmenu', preventContextMenu);
 
@@ -78,22 +88,61 @@ export const ThreeNBody = React.memo(function ThreeNBody({
       [camera]
     );
     renderingPipeline.bloomEnabled = true;
-    renderingPipeline.bloomThreshold = 0;
-    renderingPipeline.bloomKernel = 220;
-    renderingPipeline.bloomWeight = 0.01;
-    renderingPipeline.bloomScale = 0.5;
-    renderingPipeline.samples = Math.max(1, Math.min(4, engine.getCaps().maxMSAASamples || 1));
+    renderingPipeline.bloomThreshold = useStableOrbitTheme ? 0.08 : 0;
+    renderingPipeline.bloomKernel = useStableOrbitTheme ? 60 : 220;
+    renderingPipeline.bloomWeight = useStableOrbitTheme ? 0.12 : 0.01;
+    renderingPipeline.bloomScale = useStableOrbitTheme ? 0.9 : 0.5;
+    renderingPipeline.samples = useStableOrbitTheme
+      ? Math.max(1, Math.min(8, engine.getCaps().maxMSAASamples || 1))
+      : Math.max(1, Math.min(4, engine.getCaps().maxMSAASamples || 1));
 
     const hemi = new HemisphericLight('hemi', new Vector3(0, 1, 0), scene);
-    hemi.intensity = 0.35;
+    hemi.intensity = useStableOrbitTheme ? 0.08 : 0.35;
     const dir = new DirectionalLight('dir', new Vector3(-2, -2, -2).normalize(), scene);
     dir.position = new Vector3(2, 2, 2);
-    dir.intensity = 1.1;
+    dir.intensity = useStableOrbitTheme ? 0.18 : 1.1;
 
-    const bodyInstances = createBodyInstancesRenderer(scene);
-    const orbitTrails = createOrbitTrailManager(scene);
+    const bodyInstances = createBodyInstancesRenderer(scene, renderTheme, stableColorSeed);
+    const vectorOverlays = createVectorOverlayManager(scene, renderTheme, stableColorSeed);
+    let wideGlowLayer: GlowLayer | null = null;
+    renderingPipeline.glowLayerEnabled = useStableOrbitTheme;
+    if (useStableOrbitTheme && renderingPipeline.glowLayer) {
+      const glowLayer = renderingPipeline.glowLayer;
+      const velocityVectorMesh = vectorOverlays.getMesh('velocity');
+      const accelerationVectorMesh = vectorOverlays.getMesh('acceleration');
+      glowLayer.blurKernelSize = 16;
+      glowLayer.intensity = 0.72;
+      glowLayer.setExcludedByDefault(true);
+      glowLayer.addIncludedOnlyMesh(bodyInstances.mesh);
+      glowLayer.addIncludedOnlyMesh(bodyInstances.pointMesh);
+      glowLayer.addIncludedOnlyMesh(velocityVectorMesh);
+      glowLayer.addIncludedOnlyMesh(accelerationVectorMesh);
+      glowLayer.referenceMeshToUseItsOwnMaterial(bodyInstances.mesh);
+      glowLayer.referenceMeshToUseItsOwnMaterial(bodyInstances.pointMesh);
+      glowLayer.referenceMeshToUseItsOwnMaterial(velocityVectorMesh);
+      glowLayer.referenceMeshToUseItsOwnMaterial(accelerationVectorMesh);
+
+      // Second large-radius glow pass to create a broad halo around bright bodies.
+      wideGlowLayer = new GlowLayer('nbody-wide-glow', scene, {
+        mainTextureRatio: 0.25,
+        alphaBlendingMode: Constants.ALPHA_SCREENMODE,
+        camera,
+      });
+      wideGlowLayer.blurKernelSize = 132;
+      wideGlowLayer.intensity = 0.22;
+      wideGlowLayer.setExcludedByDefault(true);
+      wideGlowLayer.addIncludedOnlyMesh(bodyInstances.mesh);
+      wideGlowLayer.addIncludedOnlyMesh(bodyInstances.pointMesh);
+      wideGlowLayer.addIncludedOnlyMesh(velocityVectorMesh);
+      wideGlowLayer.addIncludedOnlyMesh(accelerationVectorMesh);
+      wideGlowLayer.referenceMeshToUseItsOwnMaterial(bodyInstances.mesh);
+      wideGlowLayer.referenceMeshToUseItsOwnMaterial(bodyInstances.pointMesh);
+      wideGlowLayer.referenceMeshToUseItsOwnMaterial(velocityVectorMesh);
+      wideGlowLayer.referenceMeshToUseItsOwnMaterial(accelerationVectorMesh);
+    }
+
+    const orbitTrails = createOrbitTrailManager(scene, renderTheme, stableColorSeed);
     const worldGrid = createWorldGridRenderer(scene);
-    const vectorOverlays = createVectorOverlayManager(scene);
     worldGrid.setVisible(useFrameStore.getState().showWorldGrid);
 
     let bodyRadius = BODY_SPHERE_RADIUS;
@@ -159,7 +208,7 @@ export const ThreeNBody = React.memo(function ThreeNBody({
       : DESKTOP_BILLBOARD_SWITCH_DISTANCE;
 
     const onResize = () => {
-      engine.setHardwareScalingLevel(1 / Math.min(window.devicePixelRatio || 1, 1.5));
+      engine.setHardwareScalingLevel(1 / Math.min(window.devicePixelRatio || 1, maxRenderPixelRatio));
       engine.resize();
     };
 
@@ -227,6 +276,8 @@ export const ThreeNBody = React.memo(function ThreeNBody({
       const dt = (now - lastTime) / 1000;
       lastTime = now;
       let frameChanged = false;
+      // Advance any active interpolation before processing newly arrived samples.
+      const displayPositionsChanged = updateDisplayPositions(now);
 
       const state = useFrameStore.getState();
       const {
@@ -241,9 +292,12 @@ export const ThreeNBody = React.memo(function ThreeNBody({
         lastFrameTime
       } = state;
 
-      if (positions && velocities && frame !== lastFrame) {
+      const hasFreshFrameSample =
+        frame !== lastFrame || lastFrameTime > previousFrameSampleTime;
+
+      if (positions && velocities && hasFreshFrameSample) {
         frameChanged = true;
-        const isResetOrRewind = frame <= lastFrame;
+        const isResetOrRewind = frame < lastFrame;
         const frameIntervalMs =
           previousFrameSampleTime > 0 && lastFrameTime > previousFrameSampleTime
             ? lastFrameTime - previousFrameSampleTime
@@ -260,7 +314,7 @@ export const ThreeNBody = React.memo(function ThreeNBody({
           beginDisplayInterpolation(positions, frameIntervalMs, now);
         }
 
-        if (frame <= lastFrame) {
+        if (frame < lastFrame) {
           previousVelocitySnapshot = new Float32Array(0);
           previousFrameSampleTime = 0;
         }
@@ -336,9 +390,6 @@ export const ThreeNBody = React.memo(function ThreeNBody({
 
         bodyRadius = BODY_SPHERE_RADIUS;
         bodyInstances.setBodyRadius(bodyRadius);
-        if (showOrbitTrails) {
-          orbitTrails.update(frame, positions, speedScratch, bodyCount, speedMin, speedSpan);
-        }
         latestPositions = positions;
         latestVelocities = velocities;
         latestAccelerationVectors = accelerationVectorScratch;
@@ -361,7 +412,6 @@ export const ThreeNBody = React.memo(function ThreeNBody({
         }
       }
 
-      const displayPositionsChanged = updateDisplayPositions(now);
       const anchorPositions =
         displayPositions.length === lastBodyCount * 3
           ? displayPositions
@@ -417,10 +467,28 @@ export const ThreeNBody = React.memo(function ThreeNBody({
       }
       previousAccelerationVectorsVisible = showAccelerationVectors;
 
-      if (showOrbitTrails !== previousOrbitTrailsVisible) {
+      const orbitTrailsVisibilityChanged = showOrbitTrails !== previousOrbitTrailsVisible;
+      if (orbitTrailsVisibilityChanged) {
         if (!showOrbitTrails) {
           orbitTrails.clear();
         }
+      }
+
+      if (
+        showOrbitTrails
+        && anchorPositions
+        && speedScratch.length === lastBodyCount
+        && lastBodyCount > 0
+        && (frameChanged || displayPositionsChanged || orbitTrailsVisibilityChanged)
+      ) {
+        orbitTrails.update(
+          frame,
+          anchorPositions,
+          speedScratch,
+          lastBodyCount,
+          latestSpeedMin,
+          latestSpeedSpan
+        );
       }
       previousOrbitTrailsVisible = showOrbitTrails;
 
@@ -518,6 +586,7 @@ export const ThreeNBody = React.memo(function ThreeNBody({
       orbitTrails.dispose();
       worldGrid.dispose();
       vectorOverlays.dispose();
+      wideGlowLayer?.dispose();
       renderingPipeline.dispose();
       scene.dispose();
       engine.dispose();

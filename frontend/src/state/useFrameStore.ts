@@ -29,9 +29,7 @@ export type FrameState = {
   cameraBaseMoveSpeed: number;
   simPaused: boolean;
   simDt: number;
-  simPruningEnabled: boolean;
   simDefaultDt: number;
-  simDefaultPruningEnabled: boolean;
   hasSimControlSnapshot: boolean;
 };
 
@@ -51,9 +49,7 @@ export type FrameActions = {
 const DEFAULT_SIM_CONTROL_STATE: SimControlSnapshot = {
   paused: false,
   dt: 0.016667,
-  pruningEnabled: true,
-  defaultDt: 0.016667,
-  defaultPruningEnabled: true
+  defaultDt: 0.016667
 };
 
 export const useFrameStore = create<FrameState & FrameActions>((set, get) => ({
@@ -73,9 +69,7 @@ export const useFrameStore = create<FrameState & FrameActions>((set, get) => ({
   cameraBaseMoveSpeed: 300,
   simPaused: DEFAULT_SIM_CONTROL_STATE.paused,
   simDt: DEFAULT_SIM_CONTROL_STATE.dt,
-  simPruningEnabled: DEFAULT_SIM_CONTROL_STATE.pruningEnabled,
   simDefaultDt: DEFAULT_SIM_CONTROL_STATE.defaultDt,
-  simDefaultPruningEnabled: DEFAULT_SIM_CONTROL_STATE.defaultPruningEnabled,
   hasSimControlSnapshot: false,
   pushFrame: ({ frame, bodyCount, bodies, receivedAt, bytes }) => {
     const prev = get();
@@ -115,10 +109,29 @@ export const useFrameStore = create<FrameState & FrameActions>((set, get) => ({
     });
   },
   setStatus: (status: ConnectionStatus) =>
-    set((state) => ({
-      status,
-      hasSimControlSnapshot: status === 'connected' ? state.hasSimControlSnapshot : false
-    })),
+    set((state) => {
+      if (status === 'connected') {
+        return {
+          status,
+          hasSimControlSnapshot: state.hasSimControlSnapshot
+        };
+      }
+
+      return {
+        status,
+        frame: 0,
+        bodyCount: 0,
+        positions: null,
+        velocities: null,
+        fps: 0,
+        totalBytes: 0,
+        lastFrameTime: performance.now(),
+        simPaused: DEFAULT_SIM_CONTROL_STATE.paused,
+        simDt: DEFAULT_SIM_CONTROL_STATE.dt,
+        simDefaultDt: DEFAULT_SIM_CONTROL_STATE.defaultDt,
+        hasSimControlSnapshot: false
+      };
+    }),
   setShowVelocityVectors: (show: boolean) => set({ showVelocityVectors: show }),
   setShowAccelerationVectors: (show: boolean) => set({ showAccelerationVectors: show }),
   setShowOrbitTrails: (show: boolean) => set({ showOrbitTrails: show }),
@@ -132,9 +145,7 @@ export const useFrameStore = create<FrameState & FrameActions>((set, get) => ({
     set({
       simPaused: snapshot.paused,
       simDt: snapshot.dt,
-      simPruningEnabled: snapshot.pruningEnabled,
       simDefaultDt: snapshot.defaultDt,
-      simDefaultPruningEnabled: snapshot.defaultPruningEnabled,
       hasSimControlSnapshot: true
     }),
   reset: () =>
@@ -155,9 +166,7 @@ export const useFrameStore = create<FrameState & FrameActions>((set, get) => ({
       cameraBaseMoveSpeed: 300,
       simPaused: DEFAULT_SIM_CONTROL_STATE.paused,
       simDt: DEFAULT_SIM_CONTROL_STATE.dt,
-      simPruningEnabled: DEFAULT_SIM_CONTROL_STATE.pruningEnabled,
       simDefaultDt: DEFAULT_SIM_CONTROL_STATE.defaultDt,
-      simDefaultPruningEnabled: DEFAULT_SIM_CONTROL_STATE.defaultPruningEnabled,
       hasSimControlSnapshot: false
     })
 }));

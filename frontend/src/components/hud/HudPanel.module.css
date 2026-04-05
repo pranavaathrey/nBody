@@ -12,7 +12,7 @@
 .hud {
   width: 100%;
   max-width: 100%;
-  padding: 12px 16px;
+  padding: 12px;
   background: rgba(20, 22, 32, 0.7);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 10px;
@@ -32,16 +32,25 @@
 
 .hudHeader {
   display: flex;
+  margin-left: 4px;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
 }
 
+.hudActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .hudTitle {
-  margin: 0 0 6px 0;
+  margin: -7px 0 0 0;
+  font-size: 1.5rem;
+  font-weight: 700;
   line-height: 1;
   white-space: nowrap;
-  overflow: hidden;
   min-width: 0;
   max-width: 100%;
   opacity: 1;
@@ -65,8 +74,20 @@
 .hudMinimized .hudHeader {
   gap: 0;
 }
+.hudMinimized .hudActions {
+  gap: 0;
+}
 .hudMinimized .hudIconButton {
   margin: 0;
+}
+.hudMinimized .hudBackButton {
+  width: 0;
+  height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
 }
 .hudMinimized .hudTitle {
   max-width: 0;
@@ -111,7 +132,7 @@
   width: 32px;
   height: 32px;
   padding: 0;
-  margin: -4px -3.5px 0 12px;
+  margin: 0;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.03);
@@ -142,6 +163,10 @@
   stroke-linejoin: round;
 }
 
+.hudBackButton {
+  color: #f4c069;
+}
+
 .dot {
   display: inline-block;
   width: 10px;
@@ -155,6 +180,7 @@
 
 .hudConnectionLine {
   display: flex;
+  margin-left: 2px;
   align-items: center;
   gap: 6px;
   min-width: 0;
@@ -170,9 +196,9 @@
 
 .hudStats {
   display: flex;
+  margin: 0 0 4px 2px;
   flex-direction: row;
   justify-content: space-between;
-  margin: 0 0 4px 0;
 }
 .statCol {
   display: flex;
@@ -418,6 +444,10 @@
     background: rgba(255, 255, 255, 0.08);
     border-color: rgba(255, 255, 255, 0.18);
     color: #f4c069;
+  }
+
+  .wsurl {
+    display: none;
   }
 
   .hudColumn {

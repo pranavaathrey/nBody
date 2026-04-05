@@ -5,8 +5,10 @@ import {
   ORBIT_TRAIL_SAMPLE_STRIDE,
   ORBIT_TRAIL_TAIL_ALPHA
 } from '../../lib/config';
-import { turboColor } from './color';
+import { randomIndexedColor, turboColor } from './color';
 import { clamp01 } from './math';
+
+export type OrbitTrailRenderTheme = 'default' | 'stable-orbits';
 
 export type OrbitTrailManager = {
   update: (
@@ -37,14 +39,24 @@ function gradeTrailColor(speedT: number, out: Color3): void {
   out.b = clamp01((luma + (out.b - luma) * saturationBoost) * valueScale);
 }
 
-export function createOrbitTrailManager(scene: Scene): OrbitTrailManager {
+export function createOrbitTrailManager(
+  scene: Scene,
+  renderTheme: OrbitTrailRenderTheme = 'default',
+  stableColorSeed = 0
+): OrbitTrailManager {
+  const useStableOrbitTheme = renderTheme === 'stable-orbits';
+
   const baseHistoryPoints = Math.max(2, Math.floor(finiteOrDefault(ORBIT_TRAIL_HISTORY_POINTS, 24)));
   const baseSampleStride = Math.max(1, Math.floor(finiteOrDefault(ORBIT_TRAIL_SAMPLE_STRIDE, 1)));
-  const tailAlpha = clamp01(finiteOrDefault(ORBIT_TRAIL_TAIL_ALPHA, 0.05));
-  const headAlpha = clamp01(finiteOrDefault(ORBIT_TRAIL_HEAD_ALPHA, 0.9));
+  const tailAlpha = useStableOrbitTheme
+    ? 0.0
+    : clamp01(finiteOrDefault(ORBIT_TRAIL_TAIL_ALPHA, 0.05));
+  const headAlpha = useStableOrbitTheme
+    ? 0.62
+    : clamp01(finiteOrDefault(ORBIT_TRAIL_HEAD_ALPHA, 0.9));
 
   const lowBodyCountThreshold = 256;
-  const lowBodyHistoryMultiplier = 512;
+  const lowBodyHistoryMultiplier = 150;
   const lowBodyMinHistoryPoints = 384;
   const lowBodyMaxTotalTrailPoints = 1_500_000;
   const lowBodyAbsoluteMaxHistoryPoints = 16_384;
@@ -63,7 +75,6 @@ export function createOrbitTrailManager(scene: Scene): OrbitTrailManager {
   let writeIndices = new Uint32Array(0);
   let sampleCounts = new Uint32Array(0);
   let lastSeenFrame = -1;
-  let lastLivePositions = new Float32Array(0);
 
   const disposeMesh = () => {
     if (!trailMesh) return;
@@ -134,123 +145,13 @@ export function createOrbitTrailManager(scene: Scene): OrbitTrailManager {
     trailMesh = new LinesMesh('orbit-trails', scene, null, undefined, undefined, true, true);
     trailMesh.isPickable = false;
     trailMesh.alwaysSelectAsActiveMesh = true;
+    trailMesh.renderingGroupId = useStableOrbitTheme ? 0 : 0;
     trailMesh.setVerticesData(VertexBuffer.PositionKind, renderPositions, true, 3);
     trailMesh.setVerticesData(VertexBuffer.ColorKind, renderColors, true, 4);
     trailMesh.setIndices(indices);
     trailMesh.setEnabled(false);
 
     lastSeenFrame = -1;
-  };
-
-  const recordLivePositions = (positions: Float32Array, count: number) => {
-    const valueCount = count * 3;
-    if (lastLivePositions.length !== valueCount) {
-      lastLivePositions = new Float32Array(valueCount);
-    }
-    lastLivePositions.set(positions.subarray(0, valueCount));
-  };
-
-  const bodyDistanceSq = (
-    positionsA: Float32Array,
-    indexA: number,
-    positionsB: Float32Array,
-    indexB: number
-  ) => {
-    const offsetA = indexA * 3;
-    const offsetB = indexB * 3;
-    const dx = positionsA[offsetA] - positionsB[offsetB];
-    const dy = positionsA[offsetA + 1] - positionsB[offsetB + 1];
-    const dz = positionsA[offsetA + 2] - positionsB[offsetB + 2];
-    return dx * dx + dy * dy + dz * dz;
-  };
-
-  const buildPrunedBodyMapping = (nextCount: number, nextPositions: Float32Array) => {
-    const mapping = new Uint32Array(nextCount);
-    if (lastLivePositions.length !== activeBodyCount * 3 || nextCount >= activeBodyCount) {
-      for (let i = 0; i < nextCount; i++) {
-        mapping[i] = i;
-      }
-      return mapping;
-    }
-
-    let previousCursor = 0;
-    let remainingRemoved = activeBodyCount - nextCount;
-
-    for (let nextIndex = 0; nextIndex < nextCount; nextIndex++) {
-      const remainingNextBodies = nextCount - nextIndex;
-      const maxCandidate = Math.min(
-        activeBodyCount - remainingNextBodies,
-        previousCursor + remainingRemoved
-      );
-
-      let bestCandidate = previousCursor;
-      let bestDistance = bodyDistanceSq(lastLivePositions, previousCursor, nextPositions, nextIndex);
-
-      for (let candidate = previousCursor + 1; candidate <= maxCandidate; candidate++) {
-        const distance = bodyDistanceSq(lastLivePositions, candidate, nextPositions, nextIndex);
-        if (distance < bestDistance) {
-          bestCandidate = candidate;
-          bestDistance = distance;
-        }
-      }
-
-      mapping[nextIndex] = bestCandidate;
-      remainingRemoved -= bestCandidate - previousCursor;
-      previousCursor = bestCandidate + 1;
-    }
-
-    return mapping;
-  };
-
-  const migrateForReducedBodyCount = (nextCount: number, nextPositions: Float32Array) => {
-    const previousActiveBodyCount = activeBodyCount;
-    const previousHistoryPointCount = activeHistoryPoints;
-    const previousHistoryPositions = historyPositions;
-    const previousHistorySpeeds = historySpeeds;
-    const previousWriteIndices = writeIndices;
-    const previousSampleCounts = sampleCounts;
-    const previousLastSeenFrame = lastSeenFrame;
-    const bodyMapping = buildPrunedBodyMapping(nextCount, nextPositions);
-    const nextDetail = resolveTrailDetail(nextCount);
-
-    allocateForBodies(nextCount, nextDetail.historyPoints, nextDetail.sampleStride);
-
-    for (let nextIndex = 0; nextIndex < nextCount; nextIndex++) {
-      const previousIndex = Math.min(bodyMapping[nextIndex], previousActiveBodyCount - 1);
-      const previousSampleCount = previousSampleCounts[previousIndex];
-      const samplesToCopy = Math.min(previousSampleCount, activeHistoryPoints);
-
-      if (samplesToCopy <= 0) {
-        continue;
-      }
-
-      const previousWriteIndex = previousWriteIndices[previousIndex];
-      const previousOldestIndex =
-        (previousWriteIndex + previousHistoryPointCount - previousSampleCount) %
-        previousHistoryPointCount;
-      const droppedOldestSamples = previousSampleCount - samplesToCopy;
-      const previousSourceStart =
-        (previousOldestIndex + droppedOldestSamples) % previousHistoryPointCount;
-
-      for (let sample = 0; sample < samplesToCopy; sample++) {
-        const previousHistoryIndex = (previousSourceStart + sample) % previousHistoryPointCount;
-        const previousHistorySlot = previousIndex * previousHistoryPointCount + previousHistoryIndex;
-        const nextHistorySlot = nextIndex * activeHistoryPoints + sample;
-
-        const previousHistoryPosBase = previousHistorySlot * 3;
-        const nextHistoryPosBase = nextHistorySlot * 3;
-
-        historyPositions[nextHistoryPosBase] = previousHistoryPositions[previousHistoryPosBase];
-        historyPositions[nextHistoryPosBase + 1] = previousHistoryPositions[previousHistoryPosBase + 1];
-        historyPositions[nextHistoryPosBase + 2] = previousHistoryPositions[previousHistoryPosBase + 2];
-        historySpeeds[nextHistorySlot] = previousHistorySpeeds[previousHistorySlot];
-      }
-
-      sampleCounts[nextIndex] = samplesToCopy;
-      writeIndices[nextIndex] = samplesToCopy % activeHistoryPoints;
-    }
-
-    lastSeenFrame = previousLastSeenFrame;
   };
 
   const appendSamples = (positions: Float32Array, speeds: Float32Array) => {
@@ -298,7 +199,11 @@ export function createOrbitTrailManager(scene: Scene): OrbitTrailManager {
       const liveZ = livePositions[liveBase + 2];
       const liveSpeed = liveSpeeds[body];
       const liveT = invSpeedSpan > 0 ? clamp01((liveSpeed - speedMin) * invSpeedSpan) : 0;
-      gradeTrailColor(liveT, tmpColor);
+      if (useStableOrbitTheme) {
+        randomIndexedColor(body, tmpColor, stableColorSeed);
+      } else {
+        gradeTrailColor(liveT, tmpColor);
+      }
 
       const sampledPointsToRender = Math.min(sampleCount, activeHistoryPoints - 1);
       const droppedSamples = sampleCount - sampledPointsToRender;
@@ -319,17 +224,29 @@ export function createOrbitTrailManager(scene: Scene): OrbitTrailManager {
         renderPositions[posOffset++] = historyPositions[historyPosBase + 1];
         renderPositions[posOffset++] = historyPositions[historyPosBase + 2];
 
-        const speed = historySpeeds[historySlot];
-        const t = invSpeedSpan > 0 ? clamp01((speed - speedMin) * invSpeedSpan) : 0;
-        gradeTrailColor(t, tmpColor);
+        if (useStableOrbitTheme) {
+          randomIndexedColor(body, tmpColor, stableColorSeed);
+        } else {
+          const speed = historySpeeds[historySlot];
+          const t = invSpeedSpan > 0 ? clamp01((speed - speedMin) * invSpeedSpan) : 0;
+          gradeTrailColor(t, tmpColor);
+        }
 
         const gradient = sampleCount > 1 ? point / (sampleCount - 1) : 1;
-        const alpha = tailAlpha + (headAlpha - tailAlpha) * gradient;
-
-        renderColors[colorOffset++] = tmpColor.r;
-        renderColors[colorOffset++] = tmpColor.g;
-        renderColors[colorOffset++] = tmpColor.b;
-        renderColors[colorOffset++] = alpha;
+        if (useStableOrbitTheme) {
+          const intensityRamp = 0.03 + 2.6 * Math.pow(gradient, 3.2);
+          const alphaRamp = headAlpha * Math.pow(gradient, 3.4);
+          renderColors[colorOffset++] = tmpColor.r * intensityRamp;
+          renderColors[colorOffset++] = tmpColor.g * intensityRamp;
+          renderColors[colorOffset++] = tmpColor.b * intensityRamp;
+          renderColors[colorOffset++] = alphaRamp;
+        } else {
+          const alpha = tailAlpha + (headAlpha - tailAlpha) * gradient;
+          renderColors[colorOffset++] = tmpColor.r;
+          renderColors[colorOffset++] = tmpColor.g;
+          renderColors[colorOffset++] = tmpColor.b;
+          renderColors[colorOffset++] = alpha;
+        }
         renderPointCount += 1;
       }
 
@@ -337,10 +254,18 @@ export function createOrbitTrailManager(scene: Scene): OrbitTrailManager {
         renderPositions[posOffset++] = liveX;
         renderPositions[posOffset++] = liveY;
         renderPositions[posOffset++] = liveZ;
-        renderColors[colorOffset++] = tmpColor.r;
-        renderColors[colorOffset++] = tmpColor.g;
-        renderColors[colorOffset++] = tmpColor.b;
-        renderColors[colorOffset++] = headAlpha;
+        if (useStableOrbitTheme) {
+          const liveIntensity = 3.0;
+          renderColors[colorOffset++] = tmpColor.r * liveIntensity;
+          renderColors[colorOffset++] = tmpColor.g * liveIntensity;
+          renderColors[colorOffset++] = tmpColor.b * liveIntensity;
+          renderColors[colorOffset++] = headAlpha;
+        } else {
+          renderColors[colorOffset++] = tmpColor.r;
+          renderColors[colorOffset++] = tmpColor.g;
+          renderColors[colorOffset++] = tmpColor.b;
+          renderColors[colorOffset++] = headAlpha;
+        }
         renderPointCount += 1;
       }
 
@@ -379,37 +304,32 @@ export function createOrbitTrailManager(scene: Scene): OrbitTrailManager {
       nextDetail.historyPoints !== activeHistoryPoints ||
       nextDetail.sampleStride !== activeSampleStride;
 
-    if (count < activeBodyCount && trailMesh) {
-      migrateForReducedBodyCount(count, positions);
-    } else if (count !== activeBodyCount || !trailMesh || detailChanged) {
+    if (count !== activeBodyCount || !trailMesh || detailChanged) {
       allocateForBodies(count, nextDetail.historyPoints, nextDetail.sampleStride);
     }
 
-    if (frame <= lastSeenFrame) {
+    if (frame < lastSeenFrame) {
       resetHistory();
     }
-    lastSeenFrame = frame;
+
+    const isNewFrame = frame > lastSeenFrame;
+    if (isNewFrame) {
+      lastSeenFrame = frame;
+    }
 
     if (!trailMesh) {
       return;
     }
 
-    if (frame % activeSampleStride !== 0) {
-      const hasRenderableSegments = rebuildRenderData(speedMin, speedSpan, positions, speeds);
-      trailMesh.updateVerticesData(VertexBuffer.PositionKind, renderPositions, false, false);
-      trailMesh.updateVerticesData(VertexBuffer.ColorKind, renderColors, false, false);
-      trailMesh.setEnabled(hasRenderableSegments);
-      recordLivePositions(positions, count);
-      return;
+    if (isNewFrame && frame % activeSampleStride === 0) {
+      appendSamples(positions, speeds);
     }
 
-    appendSamples(positions, speeds);
     const hasRenderableSegments = rebuildRenderData(speedMin, speedSpan, positions, speeds);
 
     trailMesh.updateVerticesData(VertexBuffer.PositionKind, renderPositions, false, false);
     trailMesh.updateVerticesData(VertexBuffer.ColorKind, renderColors, false, false);
     trailMesh.setEnabled(hasRenderableSegments);
-    recordLivePositions(positions, count);
   };
 
   const clear = () => {

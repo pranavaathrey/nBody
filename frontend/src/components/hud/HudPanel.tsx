@@ -7,9 +7,11 @@ import styles from './HudPanel.module.css';
 import { HudSettings } from './HudSettings';
 
 type HudPanelProps = {
+  scenarioTitle: string;
   status: ConnectionStatus;
   controlsDisabled: boolean;
   onSendControlMessage: (message: string) => boolean;
+  onBackToLanding: () => void;
 };
 
 function HudStats() {
@@ -46,7 +48,13 @@ function HudStats() {
   );
 }
 
-export function HudPanel({ status, controlsDisabled, onSendControlMessage }: HudPanelProps) {
+export function HudPanel({
+  scenarioTitle,
+  status,
+  controlsDisabled,
+  onSendControlMessage,
+  onBackToLanding
+}: HudPanelProps) {
   const [hudMinimized, setHudMinimized] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -90,17 +98,14 @@ export function HudPanel({ status, controlsDisabled, onSendControlMessage }: Hud
         });
         return;
       }
-
       if (ev.key !== 'Escape') {
         return;
       }
-
       if (settingsOpen) {
         ev.preventDefault();
         setSettingsOpen(false);
         return;
       }
-
       if (!hudMinimized) {
         ev.preventDefault();
         setHudMinimized(true);
@@ -117,35 +122,52 @@ export function HudPanel({ status, controlsDisabled, onSendControlMessage }: Hud
     <div className={styles.hudColumn}>
       <div className={`${styles.hud} ${hudMinimized ? styles.hudMinimized : ''}`.trim()}>
         <div className={styles.hudHeader}>
-          <h1 className={styles.hudTitle}>N Body Simulation</h1>
-          <button
-            className={styles.hudIconButton}
-            type="button"
-            onClick={handleToggleHudMinimized}
-            aria-label={hudMinimized ? 'Expand HUD panel' : 'Minimize HUD panel'}
-            title={hudMinimized ? 'Expand HUD panel' : 'Minimize HUD panel'}
-          >
-            {hudMinimized ? (
-              <svg viewBox="0 0 24 24" aria-hidden="true" fill="none">
-                <path d="M4 5h16" />
-                <path d="M4 12h16" />
-                <path d="M4 19h16" />
+          <h1 className={styles.hudTitle}>{scenarioTitle}</h1>
+          <div className={styles.hudActions}>
+            <button
+              className={`${styles.hudIconButton} ${styles.hudBackButton}`.trim()}
+              type="button"
+              onClick={onBackToLanding}
+              aria-label="Back to landing page"
+              title="Back to scenario selector"
+            >
+              <svg width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="m12 19-7-7 7-7"/>
+                <path d="M19 12H5"/>
               </svg>
-            ) : (
-              <svg viewBox="0 0 24 24" aria-hidden="true" fill="none">
-                <path d="m14 10 7-7" />
-                <path d="M20 10h-6V4" />
-                <path d="m3 21 7-7" />
-                <path d="M4 14h6v6" />
-              </svg>
-            )}
-          </button>
+            </button>
+            <button
+              className={styles.hudIconButton}
+              type="button"
+              onClick={handleToggleHudMinimized}
+              aria-label={hudMinimized ? 'Expand HUD panel' : 'Minimize HUD panel'}
+              title={hudMinimized ? 'Expand HUD panel' : 'Minimize HUD panel'}
+            >
+              {hudMinimized ? (
+                <svg viewBox="0 0 24 24" aria-hidden="true" fill="none">
+                  <path d="M4 5h16" />
+                  <path d="M4 12h16" />
+                  <path d="M4 19h16" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" aria-hidden="true" fill="none">
+                  <path d="m14 10 7-7" />
+                  <path d="M20 10h-6V4" />
+                  <path d="m3 21 7-7" />
+                  <path d="M4 14h6v6" />
+                </svg>
+              )}
+            </button>
+          </div>
         </div>
-        <div className={`${styles.hudBody} ${hudMinimized ? styles.isCollapsed : ''}`.trim()} aria-hidden={hudMinimized}>
+        <div className={`${styles.hudBody} 
+                         ${hudMinimized ? styles.isCollapsed : ''}`.trim()} 
+                         aria-hidden={hudMinimized}>
           <div className={styles.hudBodyInner}>
             <div className={styles.hudConnectionLine}>
-              <span className={`${styles.dot} ${status === 'connected' ? styles.ok : ''}`.trim()} />
-              {status} · <small>{WS_URL}</small>
+              <span className={`${styles.dot} 
+                                ${status === 'connected' ? styles.ok : ''}`.trim()} />
+              {status} <div className={styles.wsurl}>· <small>{WS_URL}</small></div>
             </div>
             <small>Stats</small>
             <HudStats />

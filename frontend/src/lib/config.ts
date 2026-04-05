@@ -1,7 +1,3 @@
-// WebSocket URL. Default to the current page host.
-export const WS_URL =
-	import.meta.env.VITE_WS_URL ?? `ws://${window.location.hostname}:8080/frames`;
-
 export const MAX_QUEUE = 2;
 
 // Switch to LOD dots when body is outside this distance from camera.

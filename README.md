@@ -17,11 +17,11 @@ The frontend decodes frames and renders the system in 3D.
 
 ## Visuals
 
-![Galaxy](https://raw.githubusercontent.com/pranavaathrey/nBody/scenarios/preview/galaxy.png)
+![Galaxy](https://raw.githubusercontent.com/pranavaathrey/nBody/frontend/scenarios/preview/galaxy.png)
 
-![Accretion Disk](https://raw.githubusercontent.com/pranavaathrey/nBody/scenarios/preview/accretion-disk.png)
+![Accretion Disk](https://raw.githubusercontent.com/pranavaathrey/nBody/frontend/scenarios/preview/accretion-disk.png)
 
-![Galaxy](https://raw.githubusercontent.com/pranavaathrey/nBody/scenarios/preview/stable-orbits.png)
+![Stable Orbits](https://raw.githubusercontent.com/pranavaathrey/nBody/frontend/scenarios/preview/stable-orbits.png)
 
 ## Repository Layout
 
@@ -35,13 +35,13 @@ include/      FlatBuffers headers used by backend
 
 ## Prerequisites
 
-1. C++17 compiler 
+1. C++17 compiler (with Boost headers installed)
 2. Node.js 18+ and npm
 3. Python 3.x (backend tries `python`, then `py -3`) with `numpy` (runtime-generated scenarios)
 
     Notes:
 - `galaxy` and `galaxy-collision` do not need Python at runtime because they load prebuilt `.bin` snapshots.
-- The galaxy-generation workflows require extra libraries like `agama`, but those are not needed for normal app runtime.
+- The galaxy generation workflows require extra libraries like `agama`, but those are not needed for normal runtime.
 
 ## Build Instructions
 
@@ -69,7 +69,7 @@ npm run dev
 
 ### Start a scenario
 
-1. Open the frontend in browser
+1. Open the frontend in a browser
 2. Choose a scenario on the landing page
 3. Click simulate
 

@@ -1,6 +1,76 @@
 # N Body Simulation
 
+Real-time N-body simulation with a C++ physics backend and a React+Vite frontend.
+
+The backend runs Barnes-Hut + Velocity Verlet and streams binary FlatBuffer frames over WebSocket.
+The frontend decodes frames and renders the system in 3D.
+
+## Project Features
+
+- C++ physics core using:
+	- Barnes-Hut octree force approximation
+	- Velocity Verlet integration
+	- OpenMP parallelization
+- WebSocket streaming server with Flatbuffers
+- React frontend with interactive HUD
+- Scenario system with prebuilt binaries and runtime-generated scenarios
+
+## Visuals
+
+![Galaxy](https://raw.githubusercontent.com/pranavaathrey/nBody/scenarios/preview/galaxy.png)
+
+![Accretion Disk](https://raw.githubusercontent.com/pranavaathrey/nBody/scenarios/preview/accretion-disk.png)
+
+![Galaxy](https://raw.githubusercontent.com/pranavaathrey/nBody/scenarios/preview/stable-orbits.png)
+
+## Repository Layout
+
+```text
+backend/      C++ simulation, scenario loading, websocket server
+frontend/     Vite + React UI and renderer
+scenarios/    Scenario generators and binary snapshot files
+schema/       FlatBuffers schema for streamed frame payloads
+include/      FlatBuffers headers used by backend
+```
+
+## Prerequisites
+
+1. C++17 compiler 
+2. Node.js 18+ and npm
+3. Python 3.x (backend tries `python`, then `py -3`) with `numpy` (runtime-generated scenarios)
+
+    Notes:
+- `galaxy` and `galaxy-collision` do not need Python at runtime because they load prebuilt `.bin` snapshots.
+- The galaxy-generation workflows require extra libraries like `agama`, but those are not needed for normal app runtime.
+
 ## Build Instructions
 
-#### PARALLEL BUILD
-`g++ -std=c++17 -O3 -march=native -flto=auto -DNDEBUG -Wall -Wextra -pedantic -fopenmp -Iinclude backend/main.cpp backend/velocityVerlet.cpp backend/barnesHutTree.cpp backend/webSocketServer.cpp backend/scenarios.cpp -o nbody_ws.exe -lpthread -lws2_32 -lmswsock`
+Open two terminals from the repository root.
+
+### Build and run backend
+
+Build:
+```powershell
+g++ -std=c++17 -O3 -march=native -flto=auto -DNDEBUG -Wall -Wextra -pedantic -fopenmp -Iinclude backend/main.cpp backend/velocityVerlet.cpp backend/barnesHutTree.cpp backend/webSocketServer.cpp backend/scenarios.cpp -o nbody_ws.exe -lpthread -lws2_32 -lmswsock
+```
+
+Run:
+```powershell
+./nbody_ws.exe
+```
+
+### Install and run frontend
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+### Start a scenario
+
+1. Open the frontend in browser
+2. Choose a scenario on the landing page
+3. Click simulate
+
+The frontend sends scenario + control messages, then rendering begins once first frame arrives.
